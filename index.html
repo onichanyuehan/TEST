@@ -1112,7 +1112,7 @@ body {
   </div>
 
   <!-- Public account list for the basic deterrent-only login gate. -->
-  <script src="./auth.js"></script>
+  <script src="./auth.js?v=20261031-loginfix"></script>
   <!-- ====================================================================== -->
   <!-- APPLICATION JAVASCRIPT ENGINE -->
   <!-- ====================================================================== -->
@@ -3372,18 +3372,7 @@ body {
         const recent = history.slice(-50).reverse().map(h => '<tr><td>' + safe(h.timestamp) + '</td><td>' + safe(h.itemName) + '</td><td>' + safe(h.action) + '</td><td>' + safe(h.previousQuantity) + '</td><td>' + safe(h.newQuantity) + '</td><td>' + safe(h.quantityChange) + '</td></tr>').join('');
         const win = window.open('', '_blank');
         if (!win) { this.showToast('Allow pop-ups to print the inventory report.', 'error'); return; }
-        win.document.write('<!doctype html><html><head><title>UIS Inventory Report</title><style>body{font:13px Arial,sans-serif;margin:28px;color:#222}h1{font-size:22px}h2{font-size:16px;margin-top:28px}.metrics{display:flex;gap:24px;margin:18px 0}table{border-collapse:collapse;width:100%;margin-top:10px}th,td{border:1px solid #ccc;padding:7px;text-align:left}th{background:#eee}small{color:#666}</style></head><body><h1>Inventory Report</h1><small>Generated ' + safe(new Date().toLocaleString()) + ' · ' + safe(this.workbook.filename || 'Workbook') + '</small><div class="metrics"><div><b>Records</b><br>' + data.rows.length + '</div><div><b>Units on hand</b><br>' + data.totalQty + '</div><div><b>Low stock</b><br>' + data.low.length + '</div><div><b>Zero stock</b><br>' + data.zero.length + '</div></div><h2>Reorder recommendations</h2><p>Threshold: ' + this.lowStockThreshold + ' · Target stock: ' + Math.max(1, this.lowStockThreshold * 2) + '</p><table><thead><tr><th>Item</th><th>Worksheet</th><th>Current</th><th>Target</th><th>Suggested order</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5">No recommendations</td></tr>') + '</tbody></table><h2>Recent inventory movements (up to 50)</h2><table><thead><tr><th>Timestamp</th><th>Item</th><th>Action</th><th>Previous</th><th>New</th><th>Change</th></tr></thead><tbody>' + (recent || '<tr><td colspan="6">No movement history</td></tr>') + '</tbody></table><script>window.onload=()=>window.print()<\\/script>
-  <script>
-    // Register the UIS PWA service worker when served from HTTPS or localhost.
-    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js').catch(error => {
-          console.warn('UIS offline app setup could not be registered:', error);
-        });
-      });
-    }
-  </script>
-</body></html>');
+        win.document.write('<!doctype html><html><head><title>UIS Inventory Report</title><style>body{font:13px Arial,sans-serif;margin:28px;color:#222}h1{font-size:22px}h2{font-size:16px;margin-top:28px}.metrics{display:flex;gap:24px;margin:18px 0}table{border-collapse:collapse;width:100%;margin-top:10px}th,td{border:1px solid #ccc;padding:7px;text-align:left}th{background:#eee}small{color:#666}</style></head><body><h1>Inventory Report</h1><small>Generated ' + safe(new Date().toLocaleString()) + ' · ' + safe(this.workbook.filename || 'Workbook') + '</small><div class="metrics"><div><b>Records</b><br>' + data.rows.length + '</div><div><b>Units on hand</b><br>' + data.totalQty + '</div><div><b>Low stock</b><br>' + data.low.length + '</div><div><b>Zero stock</b><br>' + data.zero.length + '</div></div><h2>Reorder recommendations</h2><p>Threshold: ' + this.lowStockThreshold + ' · Target stock: ' + Math.max(1, this.lowStockThreshold * 2) + '</p><table><thead><tr><th>Item</th><th>Worksheet</th><th>Current</th><th>Target</th><th>Suggested order</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5">No recommendations</td></tr>') + '</tbody></table><h2>Recent inventory movements (up to 50)</h2><table><thead><tr><th>Timestamp</th><th>Item</th><th>Action</th><th>Previous</th><th>New</th><th>Change</th></tr></thead><tbody>' + (recent || '<tr><td colspan="6">No movement history</td></tr>') + '</tbody></table><script>window.onload=()=>window.print()<\\/script></body></html>');
         win.document.close();
       },
 
@@ -7207,20 +7196,41 @@ handleSetScannedItemQty(rawAddedQty) {
         const message = document.getElementById('uis-auth-message');
         const username = document.getElementById('uis-auth-username');
         const password = document.getElementById('uis-auth-password');
-        if (this.isSessionValid()) { this.startApp(); return; }
-        if (!this.getConfig() || !Array.isArray(this.getConfig().users) || this.getConfig().users.length === 0) {
-          if (message) message.textContent = 'No accounts configured. Add at least one user in auth.js, then reload this page.';
+        const submit = document.getElementById('uis-auth-submit');
+        if (!form || !username || !password) {
+          console.error('UIS login form elements were not found.');
+          return;
         }
-        if (form) form.addEventListener('submit', event => {
+        if (form.dataset.uisAuthInitialized === '1') return;
+        form.dataset.uisAuthInitialized = '1';
+
+        if (this.isSessionValid()) { this.startApp(); return; }
+
+        const config = this.getConfig();
+        if (!config) {
+          if (message) message.textContent = 'Could not load auth.js. Make sure auth.js is beside index.html, then refresh the page.';
+        } else if (!Array.isArray(config.users) || config.users.length === 0) {
+          if (message) message.textContent = 'No accounts were found in auth.js. Check that the users list contains active account entries.';
+        }
+
+        form.addEventListener('submit', event => {
           event.preventDefault();
           if (message) message.textContent = '';
-          if (this.login(username.value, password.value)) {
-            password.value = '';
-            this.startApp();
-          } else if (message) {
-            message.textContent = 'Incorrect username or password.';
-            password.value = '';
-            password.focus();
+          if (submit) submit.disabled = true;
+          try {
+            if (this.login(username.value, password.value)) {
+              password.value = '';
+              this.startApp();
+            } else {
+              if (message) message.textContent = 'Login did not match an account in the loaded auth.js file. Check the username and password, then try again.';
+              password.value = '';
+              password.focus();
+            }
+          } catch (error) {
+            console.error('UIS login failed:', error);
+            if (message) message.textContent = 'The login script encountered an error. Refresh the page and try again.';
+          } finally {
+            if (submit) submit.disabled = false;
           }
         });
         if (window.lucide) lucide.createIcons();
@@ -7228,9 +7238,23 @@ handleSetScannedItemQty(rawAddedQty) {
       }
     };
 
-    window.onload = () => {
+    // Initialize login as soon as the document is parsed. Do not wait for
+    // external images, fonts, or CDN resources before enabling the sign-in form.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => UISAuth.init(), { once: true });
+    } else {
       UISAuth.init();
-    };
+    }
+  </script>
+  <script>
+    // Register the UIS PWA service worker from the page itself.
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(error => {
+          console.warn('UIS offline app setup could not be registered:', error);
+        });
+      });
+    }
   </script>
 </body>
 </html>
