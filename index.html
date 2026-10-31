@@ -3857,8 +3857,8 @@ body {
               const normalized = normalizeCodeString(code);
               if (!this._posScanLocked || (normalized !== this._posScanLastCode && Date.now() - this._posScanLastAt > 900)) {
                 this._posScanLocked = true;
-                this._posScanLastCode = normalized;
-                this._posScanLastAt = Date.now();
+                // Let handlePosScannedBarcode own the duplicate timestamp. Recording it
+                // here first makes the handler reject this very same first detection.
                 const itemAdded = this.handlePosScannedBarcode(code);
                 // POS is deliberately one-item-per-hold: stop the dedicated camera
                 // immediately after a successful cart addition. The next item requires
