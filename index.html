@@ -807,7 +807,7 @@ body {
     <div class="text-center p-8 rounded-3xl bg-[#101010] border border-emerald-400/40 shadow-2xl">
       <i data-lucide="file-up" class="w-12 h-12 text-emerald-300 mx-auto mb-3"></i>
       <div class="text-lg font-semibold text-white">Drop Excel workbook to import</div>
-      <p class="text-sm text-neutral-300 mt-1">.xlsx or .xlsm, up to 50 MB</p>
+      <p class="text-sm text-neutral-300 mt-1">.xlsx or .xlsm, up to 50 MB per workbook</p>
     </div>
   </div>
 
@@ -4844,10 +4844,9 @@ body {
         const files = Array.from(e.target.files || []);
         if (e.target) e.target.value = '';
         if (!files.length) return;
-        if (files.length + (this.openWorkbooks?.length || (this.workbook ? 1 : 0)) > 20) {
-          this.showErrorBanner('UIS supports up to 20 open workbooks at a time. Export or close this session before importing more files.');
-          return;
-        }
+        // Import sequentially so the browser does not need to parse every
+        // selected workbook at once. There is no fixed open-workbook count cap;
+        // practical limits are the device's available memory and browser storage.
         for (const file of files) await this.handleSingleWorkbookUpload(file);
       },
 
@@ -5033,8 +5032,9 @@ body {
         if (scanModal) { scanModal.classList.add('hidden'); scanModal.innerHTML = ''; }
         this.renderDisambiguationModal();
         this.renderAll();
-        const input = document.getElementById('manual-barcode-input');
-        if (input) input.focus();
+        // Do not focus the manual barcode field when closing scan details.
+        // On mobile devices, focusing a text input opens the on-screen keyboard.
+        // The field remains available for manual entry when the user taps it.
       },
 
       getScannedItemDetails() {
