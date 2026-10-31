@@ -2619,6 +2619,7 @@ body {
       _workspaceSaveTimer: null,
       _workspaceSaveInFlight: false,
       _workspaceSaveQueued: false,
+      _workspaceSavePromise: null,
       _workspaceLastSavedAt: 0,
       undoStack: [],
       redoStack: [],
@@ -2643,6 +2644,9 @@ body {
         this.headerRowOverrides = {};
         this.rebuildIndex();
         this.renderAll();
+        // Ask the browser to protect this local inventory database from routine
+        // storage eviction. This never uploads data or enables cloud sync.
+        try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch (_) {}
         await this.restoreWorkspaceIfAvailable();
       },
 
@@ -2657,57 +2661,83 @@ body {
             const db = request.result;
             if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', { keyPath: 'id' });
           };
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error || new Error('Could not open local recovery storage'));
-          request.onblocked = () => reject(new Error('Local recovery storage is blocked by another tab'));
+          request.onsuccess = () => {
+            const db = request.result;
+            db.onversionchange = () => { try { db.close(); } catch (_) {} this._workspaceDbPromise = null; };
+            resolve(db);
+          };
+          request.onerror = () => { this._workspaceDbPromise = null; reject(request.error || new Error('Could not open local recovery storage')); };
+          request.onblocked = () => { this._workspaceDbPromise = null; reject(new Error('Local recovery storage is blocked by another tab')); };
         });
         return this._workspaceDbPromise;
+      },
+
+      flushWorkspaceSave() {
+        clearTimeout(this._workspaceSaveTimer);
+        this._workspaceSaveTimer = null;
+        if (!this.workbook?.originalBuffer) return Promise.resolve();
+        return this.persistWorkspaceSnapshot();
       },
 
       scheduleWorkspaceSave() {
         if (!this.workbook?.originalBuffer) return;
         clearTimeout(this._workspaceSaveTimer);
-        this._workspaceSaveTimer = setTimeout(() => this.persistWorkspaceSnapshot(), 850);
+        // Short debounce reduces the chance that a quick reload loses a recent edit.
+        this._workspaceSaveTimer = setTimeout(() => this.persistWorkspaceSnapshot(), 150);
       },
 
       async persistWorkspaceSnapshot() {
         if (!this.workbook?.originalBuffer) return;
-        if (this._workspaceSaveInFlight) { this._workspaceSaveQueued = true; return; }
+        if (this._workspaceSaveInFlight) {
+          this._workspaceSaveQueued = true;
+          return this._workspaceSavePromise || undefined;
+        }
         this._workspaceSaveInFlight = true;
-        try {
-          const db = await this.openWorkspaceDatabase();
-          const status = document.getElementById('workspace-save-status');
-          if (status) status.textContent = 'Saving locally…';
-          const snapshot = {
-            id: 'latest', schemaVersion: 3, savedAt: Date.now(), filename: this.workbook.filename || 'workbook.xlsx',
-            workbook: this.workbook, auditLogs: this.auditLogs || [], activityLogs: this.activityLogs || [], sales: this.sales || [],
-            headerRowOverrides: this.headerRowOverrides || {}, activeSheetIdx: this.activeSheetIdx || 0,
-            activeView: this.activeView || 'scanner', pendingExportChanges: !!this._pendingExportChanges,
-            lastWorkbookExportAt: this._lastWorkbookExportAt || 0
-          };
-          await new Promise((resolve, reject) => {
-            const tx = db.transaction('snapshots', 'readwrite');
-            tx.objectStore('snapshots').put(snapshot);
-            tx.oncomplete = resolve;
-            tx.onerror = () => reject(tx.error || new Error('Could not save local recovery snapshot'));
-            tx.onabort = () => reject(tx.error || new Error('Local recovery save was interrupted'));
-          });
-          this._workspaceLastSavedAt = snapshot.savedAt;
-          if (status) status.textContent = 'Saved locally';
-          if (navigator.storage?.estimate) {
-            const estimate = await navigator.storage.estimate().catch(() => null);
-            if (estimate?.quota && estimate.usage / estimate.quota > 0.9 && status) {
-              status.textContent = 'Browser storage nearly full';
+        const saveLoop = async () => {
+          try {
+            do {
+              this._workspaceSaveQueued = false;
+              const db = await this.openWorkspaceDatabase();
+              const status = document.getElementById('workspace-save-status');
+              if (status) status.textContent = 'Saving locally…';
+              const snapshot = {
+                id: 'latest', schemaVersion: 3, savedAt: Date.now(), filename: this.workbook.filename || 'workbook.xlsx',
+                workbook: this.workbook, auditLogs: this.auditLogs || [], activityLogs: this.activityLogs || [], sales: this.sales || [],
+                headerRowOverrides: this.headerRowOverrides || {}, activeSheetIdx: this.activeSheetIdx || 0,
+                activeView: this.activeView || 'scanner', pendingExportChanges: !!this._pendingExportChanges,
+                lastWorkbookExportAt: this._lastWorkbookExportAt || 0
+              };
+              await new Promise((resolve, reject) => {
+                let tx;
+                try { tx = db.transaction('snapshots', 'readwrite', { durability: 'strict' }); }
+                catch (_) { tx = db.transaction('snapshots', 'readwrite'); }
+                tx.objectStore('snapshots').put(snapshot);
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error || new Error('Could not save local recovery snapshot'));
+                tx.onabort = () => reject(tx.error || new Error('Local recovery save was interrupted'));
+              });
+              this._workspaceLastSavedAt = snapshot.savedAt;
+              if (status) status.textContent = 'Saved locally';
+              if (navigator.storage?.estimate) {
+                const estimate = await navigator.storage.estimate().catch(() => null);
+                if (estimate?.quota && estimate.usage / estimate.quota > 0.9 && status) status.textContent = 'Browser storage nearly full';
+              }
+            } while (this._workspaceSaveQueued);
+          } catch (err) {
+            console.warn('UIS local recovery save failed:', err);
+            const status = document.getElementById('workspace-save-status');
+            if (status) status.textContent = 'Local save unavailable';
+          } finally {
+            this._workspaceSaveInFlight = false;
+            this._workspaceSavePromise = null;
+            if (this._workspaceSaveQueued) {
+              this._workspaceSaveQueued = false;
+              this.scheduleWorkspaceSave();
             }
           }
-        } catch (err) {
-          console.warn('UIS local recovery save failed:', err);
-          const status = document.getElementById('workspace-save-status');
-          if (status) status.textContent = 'Local save unavailable';
-        } finally {
-          this._workspaceSaveInFlight = false;
-          if (this._workspaceSaveQueued) { this._workspaceSaveQueued = false; this.scheduleWorkspaceSave(); }
-        }
+        };
+        this._workspaceSavePromise = saveLoop();
+        return this._workspaceSavePromise;
       },
 
       async restoreWorkspaceIfAvailable() {
@@ -3620,12 +3650,14 @@ body {
       installGlobalUXHandlers() {
         // Escape closes transient navigation without disturbing workbook edits.
         document.addEventListener('visibilitychange', () => {
-          if (document.visibilityState === 'hidden' && this.workbook?.originalBuffer) this.persistWorkspaceSnapshot();
+          if (document.visibilityState === 'hidden' && this.workbook?.originalBuffer) this.flushWorkspaceSave();
         });
         window.addEventListener('pagehide', () => {
-          if (this.workbook?.originalBuffer) this.persistWorkspaceSnapshot();
+          if (this.workbook?.originalBuffer) this.flushWorkspaceSave();
         });
         window.addEventListener('beforeunload', event => {
+          // Start the IndexedDB write before the document is discarded.
+          if (this.workbook?.originalBuffer) this.flushWorkspaceSave();
           if (!this._pendingExportChanges) return;
           event.preventDefault();
           event.returnValue = 'Inventory changes have not been exported to an Excel workbook yet.';
@@ -3971,7 +4003,8 @@ body {
           this.rebuildIndex();
           this.recordActivity('WORKBOOK_IMPORTED', { details: `Imported ${file.name}: ${importValidation.sheetCount} worksheets and ${importValidation.totalRecords.toLocaleString()} records. ${importValidation.warnings.length ? 'Warnings: ' + importValidation.warnings.join('; ') : 'No import warnings.'}` }, { category: 'system', affectsWorkbook: false });
           this.renderAll();
-          this.showToast(`Imported "${file.name}" and built dual-column (BARCODE + CODE) index.`);
+          await this.flushWorkspaceSave();
+          this.showToast(`Imported "${file.name}" and saved a local recovery copy.`);
         } catch (err) {
           this.showErrorBanner(`Workbook Inspection Error: ${err.message}`);
         }
