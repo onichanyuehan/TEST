@@ -4,6 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#f3eee5" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="UIS" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/uis-192.png" />
+  <link rel="apple-touch-icon" href="./icons/uis-180.png" />
   <meta name="description" content="A browser-based inventory workspace for Excel workbooks, barcode scanning, bulk updates, verified exports, local session recovery, inventory insights, undo/redo, and portable backups." />
   <title>Universal Inventory System</title>
   <!-- Tailwind CSS CDN -->
@@ -3365,7 +3372,18 @@ body {
         const recent = history.slice(-50).reverse().map(h => '<tr><td>' + safe(h.timestamp) + '</td><td>' + safe(h.itemName) + '</td><td>' + safe(h.action) + '</td><td>' + safe(h.previousQuantity) + '</td><td>' + safe(h.newQuantity) + '</td><td>' + safe(h.quantityChange) + '</td></tr>').join('');
         const win = window.open('', '_blank');
         if (!win) { this.showToast('Allow pop-ups to print the inventory report.', 'error'); return; }
-        win.document.write('<!doctype html><html><head><title>UIS Inventory Report</title><style>body{font:13px Arial,sans-serif;margin:28px;color:#222}h1{font-size:22px}h2{font-size:16px;margin-top:28px}.metrics{display:flex;gap:24px;margin:18px 0}table{border-collapse:collapse;width:100%;margin-top:10px}th,td{border:1px solid #ccc;padding:7px;text-align:left}th{background:#eee}small{color:#666}</style></head><body><h1>Inventory Report</h1><small>Generated ' + safe(new Date().toLocaleString()) + ' · ' + safe(this.workbook.filename || 'Workbook') + '</small><div class="metrics"><div><b>Records</b><br>' + data.rows.length + '</div><div><b>Units on hand</b><br>' + data.totalQty + '</div><div><b>Low stock</b><br>' + data.low.length + '</div><div><b>Zero stock</b><br>' + data.zero.length + '</div></div><h2>Reorder recommendations</h2><p>Threshold: ' + this.lowStockThreshold + ' · Target stock: ' + Math.max(1, this.lowStockThreshold * 2) + '</p><table><thead><tr><th>Item</th><th>Worksheet</th><th>Current</th><th>Target</th><th>Suggested order</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5">No recommendations</td></tr>') + '</tbody></table><h2>Recent inventory movements (up to 50)</h2><table><thead><tr><th>Timestamp</th><th>Item</th><th>Action</th><th>Previous</th><th>New</th><th>Change</th></tr></thead><tbody>' + (recent || '<tr><td colspan="6">No movement history</td></tr>') + '</tbody></table><script>window.onload=()=>window.print()<\\/script></body></html>');
+        win.document.write('<!doctype html><html><head><title>UIS Inventory Report</title><style>body{font:13px Arial,sans-serif;margin:28px;color:#222}h1{font-size:22px}h2{font-size:16px;margin-top:28px}.metrics{display:flex;gap:24px;margin:18px 0}table{border-collapse:collapse;width:100%;margin-top:10px}th,td{border:1px solid #ccc;padding:7px;text-align:left}th{background:#eee}small{color:#666}</style></head><body><h1>Inventory Report</h1><small>Generated ' + safe(new Date().toLocaleString()) + ' · ' + safe(this.workbook.filename || 'Workbook') + '</small><div class="metrics"><div><b>Records</b><br>' + data.rows.length + '</div><div><b>Units on hand</b><br>' + data.totalQty + '</div><div><b>Low stock</b><br>' + data.low.length + '</div><div><b>Zero stock</b><br>' + data.zero.length + '</div></div><h2>Reorder recommendations</h2><p>Threshold: ' + this.lowStockThreshold + ' · Target stock: ' + Math.max(1, this.lowStockThreshold * 2) + '</p><table><thead><tr><th>Item</th><th>Worksheet</th><th>Current</th><th>Target</th><th>Suggested order</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5">No recommendations</td></tr>') + '</tbody></table><h2>Recent inventory movements (up to 50)</h2><table><thead><tr><th>Timestamp</th><th>Item</th><th>Action</th><th>Previous</th><th>New</th><th>Change</th></tr></thead><tbody>' + (recent || '<tr><td colspan="6">No movement history</td></tr>') + '</tbody></table><script>window.onload=()=>window.print()<\\/script>
+  <script>
+    // Register the UIS PWA service worker when served from HTTPS or localhost.
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(error => {
+          console.warn('UIS offline app setup could not be registered:', error);
+        });
+      });
+    }
+  </script>
+</body></html>');
         win.document.close();
       },
 
