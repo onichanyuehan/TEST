@@ -2621,6 +2621,9 @@ body {
       _workspaceSaveQueued: false,
       _workspaceSavePromise: null,
       _workspaceLastSavedAt: 0,
+      _workspaceDirty: false,
+      _workspaceSaveError: null,
+      _workspaceSaveRevision: 0,
       undoStack: [],
       redoStack: [],
       historyLimit: 30,
@@ -2681,9 +2684,16 @@ body {
 
       scheduleWorkspaceSave() {
         if (!this.workbook?.originalBuffer) return;
+        this._workspaceDirty = true;
+        this._workspaceSaveRevision = (this._workspaceSaveRevision || 0) + 1;
+        this._workspaceSaveError = null;
         clearTimeout(this._workspaceSaveTimer);
-        // Short debounce reduces the chance that a quick reload loses a recent edit.
-        this._workspaceSaveTimer = setTimeout(() => this.persistWorkspaceSnapshot(), 150);
+        // Persist on the next task turn. This is intentionally not a long debounce:
+        // inventory edits should reach IndexedDB as soon as the current UI event ends.
+        this._workspaceSaveTimer = setTimeout(() => {
+          this._workspaceSaveTimer = null;
+          this.persistWorkspaceSnapshot().catch(err => console.warn('UIS autosave failed:', err));
+        }, 0);
       },
 
       async persistWorkspaceSnapshot() {
@@ -2697,15 +2707,21 @@ body {
           try {
             do {
               this._workspaceSaveQueued = false;
+              const revisionAtStart = this._workspaceSaveRevision || 0;
               const db = await this.openWorkspaceDatabase();
               const status = document.getElementById('workspace-save-status');
               if (status) status.textContent = 'Saving locally…';
               const snapshot = {
-                id: 'latest', schemaVersion: 3, savedAt: Date.now(), filename: this.workbook.filename || 'workbook.xlsx',
+                id: 'latest', schemaVersion: 4, savedAt: Date.now(), filename: this.workbook.filename || 'workbook.xlsx',
                 workbook: this.workbook, auditLogs: this.auditLogs || [], activityLogs: this.activityLogs || [], sales: this.sales || [],
                 headerRowOverrides: this.headerRowOverrides || {}, activeSheetIdx: this.activeSheetIdx || 0,
                 activeView: this.activeView || 'scanner', pendingExportChanges: !!this._pendingExportChanges,
-                lastWorkbookExportAt: this._lastWorkbookExportAt || 0
+                lastWorkbookExportAt: this._lastWorkbookExportAt || 0,
+                posLastReceipt: this.posLastReceipt || null,
+                posCart: (this.posCart || []).map(line => ({ key: String(line.key || ''), quantity: Number(line.quantity), unitPrice: Number(line.unitPrice) })),
+                posPaymentMethod: this.posPaymentMethod || 'Cash',
+                posCashReceived: String(this.posCashReceived || ''),
+                posSearchQuery: String(this.posSearchQuery || '')
               };
               await new Promise((resolve, reject) => {
                 let tx;
@@ -2717,7 +2733,14 @@ body {
                 tx.onabort = () => reject(tx.error || new Error('Local recovery save was interrupted'));
               });
               this._workspaceLastSavedAt = snapshot.savedAt;
-              if (status) status.textContent = 'Saved locally';
+              this._workspaceSaveError = null;
+              if (revisionAtStart === (this._workspaceSaveRevision || 0) && !this._workspaceSaveQueued) {
+                this._workspaceDirty = false;
+                if (status) status.textContent = 'Saved locally';
+              } else if (status) {
+                status.textContent = 'Saving latest changes…';
+                this._workspaceSaveQueued = true;
+              }
               if (navigator.storage?.estimate) {
                 const estimate = await navigator.storage.estimate().catch(() => null);
                 if (estimate?.quota && estimate.usage / estimate.quota > 0.9 && status) status.textContent = 'Browser storage nearly full';
@@ -2725,8 +2748,10 @@ body {
             } while (this._workspaceSaveQueued);
           } catch (err) {
             console.warn('UIS local recovery save failed:', err);
+            this._workspaceSaveError = err;
+            this._workspaceDirty = true;
             const status = document.getElementById('workspace-save-status');
-            if (status) status.textContent = 'Local save unavailable';
+            if (status) status.textContent = 'Local save failed. Keep this page open and check browser storage.';
           } finally {
             this._workspaceSaveInFlight = false;
             this._workspaceSavePromise = null;
@@ -2759,6 +2784,13 @@ body {
           this.auditLogs = Array.isArray(snapshot.auditLogs) ? snapshot.auditLogs : [];
           this.activityLogs = Array.isArray(snapshot.activityLogs) ? snapshot.activityLogs : [];
           this.sales = Array.isArray(snapshot.sales) ? snapshot.sales : [];
+          this.posLastReceipt = snapshot.posLastReceipt || null;
+          this.posCart = Array.isArray(snapshot.posCart) ? snapshot.posCart.filter(line => line && typeof line.key === 'string' && Number.isSafeInteger(Number(line.quantity)) && Number(line.quantity) > 0 && Number.isFinite(Number(line.unitPrice)) && Number(line.unitPrice) >= 0).map(line => ({ key: line.key, quantity: Number(line.quantity), unitPrice: Number(line.unitPrice) })) : [];
+          this.posPaymentMethod = ['Cash','Card','GCash','Maya','Other'].includes(snapshot.posPaymentMethod) ? snapshot.posPaymentMethod : 'Cash';
+          this.posCashReceived = String(snapshot.posCashReceived || '');
+          this.posSearchQuery = String(snapshot.posSearchQuery || '');
+          this._workspaceDirty = false;
+          this._workspaceSaveError = null;
           this._pendingExportChanges = snapshot.pendingExportChanges === true || (snapshot.pendingExportChanges === undefined && this.workbook.worksheets.some(ws => ws.records.some(r => r.isModified || r.isFullUpcModified || r.isNewRow) || ws.fflzHeaderRenamed));
           this._lastWorkbookExportAt = Number(snapshot.lastWorkbookExportAt) || 0;
           this.headerRowOverrides = snapshot.headerRowOverrides || {};
@@ -3648,6 +3680,15 @@ body {
       },
 
       installGlobalUXHandlers() {
+        // Catch data edits made by inline UI handlers, including paths that do not
+        // explicitly call recordActivity(). These listeners run after target handlers.
+        const queueLocalSaveAfterUiMutation = () => {
+          if (this.workbook?.originalBuffer) this.scheduleWorkspaceSave();
+        };
+        document.addEventListener('input', queueLocalSaveAfterUiMutation);
+        document.addEventListener('change', queueLocalSaveAfterUiMutation);
+        document.addEventListener('click', queueLocalSaveAfterUiMutation);
+        document.addEventListener('submit', queueLocalSaveAfterUiMutation);
         // Escape closes transient navigation without disturbing workbook edits.
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'hidden' && this.workbook?.originalBuffer) this.flushWorkspaceSave();
@@ -3656,11 +3697,16 @@ body {
           if (this.workbook?.originalBuffer) this.flushWorkspaceSave();
         });
         window.addEventListener('beforeunload', event => {
-          // Start the IndexedDB write before the document is discarded.
-          if (this.workbook?.originalBuffer) this.flushWorkspaceSave();
-          if (!this._pendingExportChanges) return;
+          // Start a final write, but do not assume an async IndexedDB transaction
+          // can finish after the browser has discarded this document.
+          const hasWorkbook = !!this.workbook?.originalBuffer;
+          const localSavePending = hasWorkbook && (!!this._workspaceDirty || !!this._workspaceSaveTimer || !!this._workspaceSaveInFlight);
+          if (hasWorkbook) this.flushWorkspaceSave();
+          if (!localSavePending && !this._pendingExportChanges) return;
           event.preventDefault();
-          event.returnValue = 'Inventory changes have not been exported to an Excel workbook yet.';
+          event.returnValue = localSavePending
+            ? 'UIS is still saving your latest local changes. Cancel reload, wait until Saved locally appears, then reload.'
+            : 'Inventory changes have not been exported to an Excel workbook yet.';
           return event.returnValue;
         });
         document.addEventListener('keydown', (event) => {
