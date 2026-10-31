@@ -2886,9 +2886,9 @@ body {
         const sorted = logs.filter(e => selected === 'all' || keyFor(e.timestamp) === selected)
           .slice().sort((a,b) => keyFor(b.timestamp).localeCompare(keyFor(a.timestamp)) || new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
         if (!sorted.length) { this.showToast('There are no activity records for that date.', 'error'); return; }
-        const rows = sorted.map(e => [keyFor(e.timestamp), e.itemName, e.action, e.timestamp, e.actor, e.sheetName, e.rowNumber, e.barcode, e.previousValue, e.newValue, e.quantityChange, e.reference, e.details]);
+        const rows = sorted.map(e => [keyFor(e.timestamp), e.itemName, e.action, e.timestamp, e.actor, e.workbookName || '', e.sheetName, e.rowNumber, e.barcode, e.previousValue, e.newValue, e.quantityChange, e.reference, e.details]);
         const suffix = selected === 'all' ? 'All_Dates' : selected.replace(/[^0-9-]/g, '_');
-        this.downloadCsv(`UIS_Activity_Log_${suffix}.csv`, ['Activity Date','What / Item','Action','When','Who','Worksheet','Row','Barcode','Previous Value','New Value','Quantity Change','Reference','Details'], rows);
+        this.downloadCsv(`UIS_Activity_Log_${suffix}.csv`, ['Activity Date','What / Item','Action','When','Who','Workbook','Worksheet','Row','Barcode','Previous Value','New Value','Quantity Change','Reference','Details'], rows);
         this.activityExportModalOpen = false;
         this.recordActivity('ACTIVITY_LOG_EXPORTED', { details: `Exported ${sorted.length} activity record(s) for ${selected === 'all' ? 'all dates' : selected} to CSV.` }, { category: 'system', affectsWorkbook: false });
         this.showToast(`Activity log CSV exported: ${selected === 'all' ? 'all dates' : selected}.`);
@@ -3887,26 +3887,26 @@ body {
           const now = new Date().toLocaleString();
           const barcode = source.codes.join(' | ');
           const action = ({ receive:'STOCK_RECEIPT', issue:'STOCK_ISSUE', adjust:'STOCK_ADJUSTMENT', transfer:'STOCK_TRANSFER_OUT' })[type];
-          this.recordInventoryHistory({ timestamp: now, sheetName: source.sheetName, rowNumber: source.rowNumber,
+          this.recordInventoryHistory({ workbookIdx: source.workbookIdx, timestamp: now, sheetName: source.sheetName, rowNumber: source.rowNumber,
             itemName: source.itemName, barcode, previousQuantity: sourceChange.previous, newQuantity: sourceChange.next,
             quantityChange: sourceChange.delta, action, reference, notes,
             destinationSheetName: destination?.sheetName || '', destinationRowNumber: destination?.rowNumber || '' });
-          this.auditLogs.unshift({ id:`ops-${Date.now()}-${Math.random()}`, timestamp:now, sheetName:source.sheetName,
+          this.appendWorkbookAudit(source.workbookIdx, { id:`ops-${Date.now()}-${Math.random()}`, timestamp:now, sheetName:source.sheetName,
             cellAddress:sourceChange.cellAddress, previousValue:String(sourceChange.previous), newValue:String(sourceChange.next),
             operation:action + (reference ? ` · ${reference}` : '') });
-          this.recordActivity(action, { itemName: source.itemName, barcode, sheetName: source.sheetName, rowNumber: source.rowNumber,
+          this.recordActivity(action, { workbookIdx: source.workbookIdx, sheetIdx: source.sheetIdx, itemName: source.itemName, barcode, sheetName: source.sheetName, rowNumber: source.rowNumber,
             previousValue: sourceChange.previous, newValue: sourceChange.next, quantityChange: sourceChange.delta, reference,
             details: `${type.toUpperCase()} transaction${destination ? ` to ${destination.sheetName} row ${destination.rowNumber}` : ''}${notes ? ` · ${notes}` : ''}` });
           if (type === 'transfer') {
             const destChange = this.updateManagedQuantity(destination, destinationCurrent + amount);
-            this.recordInventoryHistory({ timestamp:now, sheetName:destination.sheetName, rowNumber:destination.rowNumber,
+            this.recordInventoryHistory({ workbookIdx: destination.workbookIdx, timestamp:now, sheetName:destination.sheetName, rowNumber:destination.rowNumber,
               itemName:destination.itemName, barcode:destination.codes.join(' | '), previousQuantity:destChange.previous,
               newQuantity:destChange.next, quantityChange:destChange.delta, action:'STOCK_TRANSFER_IN', reference, notes,
               destinationSheetName:source.sheetName, destinationRowNumber:source.rowNumber });
-            this.auditLogs.unshift({ id:`ops-in-${Date.now()}-${Math.random()}`, timestamp:now, sheetName:destination.sheetName,
+            this.appendWorkbookAudit(destination.workbookIdx, { id:`ops-in-${Date.now()}-${Math.random()}`, timestamp:now, sheetName:destination.sheetName,
               cellAddress:destChange.cellAddress, previousValue:String(destChange.previous), newValue:String(destChange.next),
               operation:`STOCK_TRANSFER_IN${reference ? ` · ${reference}` : ''}` });
-            this.recordActivity('STOCK_TRANSFER_IN', { itemName: destination.itemName, barcode: destination.codes.join(' | '), sheetName: destination.sheetName,
+            this.recordActivity('STOCK_TRANSFER_IN', { workbookIdx: destination.workbookIdx, sheetIdx: destination.sheetIdx, itemName: destination.itemName, barcode: destination.codes.join(' | '), sheetName: destination.sheetName,
               rowNumber: destination.rowNumber, previousValue: destChange.previous, newValue: destChange.next, quantityChange: destChange.delta, reference,
               details: `Received by transfer from ${source.sheetName} row ${source.rowNumber}${notes ? ` · ${notes}` : ''}` });
           }
@@ -4036,7 +4036,7 @@ body {
         const sale = (this.sales || []).find(entry => entry.id === saleId) || this.posLastReceipt;
         if (!sale) { this.showToast('No sale receipt is available.', 'error'); return; }
         const safe = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-        const rows = (sale.lines || []).map(line => `<tr><td>${safe(line.itemName)}</td><td>${line.quantity}</td><td>₱${Number(line.unitPrice).toFixed(2)}</td><td>₱${Number(line.lineTotal).toFixed(2)}</td></tr>`).join('');
+        const rows = (sale.lines || []).map(line => `<tr><td>${safe(line.itemName)}<div class="muted">${safe(line.workbookName || '')} · ${safe(line.sheetName || '')} · Row ${safe(line.rowNumber || '')}</div></td><td>${line.quantity}</td><td>₱${Number(line.unitPrice).toFixed(2)}</td><td>₱${Number(line.lineTotal).toFixed(2)}</td></tr>`).join('');
         const win = window.open('', '_blank');
         if (!win) { this.showToast('Allow pop-ups to print the receipt.', 'error'); return; }
         win.document.write(`<!doctype html><html><head><title>Receipt ${safe(sale.id)}</title><style>body{font:13px Arial,sans-serif;max-width:420px;margin:24px auto;color:#111}h1{text-align:center;font-size:20px}table{width:100%;border-collapse:collapse;margin:18px 0}td,th{padding:7px 3px;border-bottom:1px solid #ddd;text-align:left}td:last-child,th:last-child{text-align:right}.total{text-align:right;font-size:18px;font-weight:bold}.muted{color:#666;font-size:11px}</style></head><body><h1>SALES RECEIPT</h1><div class="muted">${safe(sale.id)}<br>${safe(new Date(sale.timestamp).toLocaleString())}<br>Cashier: ${safe(sale.actor || 'Unknown')}</div><table><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>${rows}</tbody></table><div>Payment: ${safe(sale.paymentMethod)}</div><div class="total">Total: ₱${Number(sale.total).toFixed(2)}</div>${sale.paymentMethod==='Cash'?`<p>Cash received: ₱${Number(sale.cashReceived).toFixed(2)}<br>Change: ₱${Number(sale.change).toFixed(2)}</p>`:''}<p class="muted" style="text-align:center">Thank you!</p><script>window.onload=()=>window.print()<\/script></body></html>`);
@@ -4323,7 +4323,7 @@ body {
         if (code === this._posScanLastCode && now - (this._posScanLastAt || 0) < 1100) return false;
         this._posScanLastCode = code;
         this._posScanLastAt = now;
-        const match = findByBarcode(code, this.codeIndex);
+        const match = findByBarcode(code, this.codeIndex || this.inventoryCodeIndex);
         if (!match?.products?.length) {
           this.showToast(`POS: barcode not found (${code}).`, 'error');
           playScanSound('error');
@@ -4359,7 +4359,7 @@ body {
         const items = this.getOperationItems();
         if (!items.length) { container.innerHTML = `<div class="p-8 text-center text-sm text-neutral-400">Import an inventory workbook before using POS.</div>`; return; }
         const query = String(this.posSearchQuery || '').trim().toLowerCase();
-        const filtered = items.filter(item => !query || `${item.itemName} ${item.codes.join(' ')} ${item.sheetName}`.toLowerCase().includes(query)).slice(0,80);
+        const filtered = items.filter(item => !query || `${item.itemName} ${item.workbookName} ${item.codes.join(' ')} ${item.sheetName}`.toLowerCase().includes(query)).slice(0,80);
         const lines = this.getPosCartDetails();
         const total = Math.round(lines.reduce((sum,line)=>sum+line.lineTotal,0)*100)/100;
         const received = Number(String(this.posCashReceived || '').replace(/,/g,''));
@@ -4368,8 +4368,8 @@ body {
         container.innerHTML = `<div class="space-y-4">
           <div class="flex flex-wrap items-center justify-between gap-2"><div><h2 class="text-lg font-bold text-white">Point of Sale</h2><p class="text-xs text-neutral-400">Local checkout · inventory deducted on completed sale · printable receipt</p></div><div class="rounded-xl bg-black/30 border border-white/10 px-4 py-2"><div class="text-[10px] text-neutral-500">Completed sales</div><div class="text-xl font-bold text-emerald-300">${(this.sales||[]).length.toLocaleString()}</div></div></div>
           <div class="grid grid-cols-1 xl:grid-cols-5 gap-4">
-            ${query ? `<section class="xl:col-span-3 rounded-2xl border border-white/10 bg-[#171717] p-3 space-y-2"><div class="flex items-center justify-between"><div class="text-xs font-semibold text-white">Search results</div><span class="text-[10px] text-neutral-500">${filtered.length} matches</span></div><div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[58vh] overflow-auto">${filtered.map(item=>`<div class="rounded-xl border border-white/10 bg-black/20 p-2.5 flex items-center justify-between gap-2"><div class="min-w-0"><div class="text-xs font-semibold text-white whitespace-normal break-words leading-tight">${escapeHtml(item.itemName || 'Unnamed item')}</div><div class="text-[10px] text-neutral-500 whitespace-normal break-all leading-tight mt-1">${escapeHtml(item.codes.join(' · ') || item.sheetName)} · Stock ${Number.isFinite(item.qty)?item.qty:'?'}</div><div class="text-xs text-emerald-300 mt-1">${Number.isFinite(item.unitPrice)&&item.unitPrice>=0?money(item.unitPrice):'Set price in cart'}</div></div><button type="button" onclick="app.addPosItem('${escapeHtml(item.key)}')" ${!Number.isFinite(item.qty)||item.qty<=0?'disabled':''} class="shrink-0 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-30">Add</button></div>`).join('') || '<div class="col-span-full py-8 text-center text-xs text-neutral-500">No matching products.</div>'}</div></section>` : `<div class="xl:col-span-3 rounded-2xl border border-dashed border-white/10 bg-[#171717]/50 p-6 text-center text-xs text-neutral-500">Search for a product to display matching items here.</div>`}
-            <section id="pos-cart-panel" class="xl:col-span-2 rounded-2xl border border-white/10 bg-[#171717] p-3 space-y-2"><div class="flex items-center justify-between"><h3 class="text-xs font-semibold text-white">Cart · ${lines.length} products</h3><button type="button" onclick="app.posCart=[];app.renderPosView(document.getElementById('main-view-container'))" class="text-[10px] text-rose-300">Clear</button></div><div class="space-y-1.5 max-h-[42vh] overflow-auto">${lines.map(line=>`<div class="pos-cart-line rounded-lg border border-white/5 bg-black/20"><div class="flex items-start justify-between gap-2"><div class="min-w-0 flex-1"><div class="pos-cart-name font-semibold text-white">${escapeHtml(line.item.itemName)}</div><div class="pos-cart-meta text-neutral-500 mt-1">Available: ${line.item.qty}</div></div><button type="button" onclick="app.removePosItem('${escapeHtml(line.key)}')" class="text-rose-300 text-[10px] shrink-0">Remove</button></div><div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)_auto] items-end gap-2 mt-1.5"><label class="text-neutral-500">Qty<input type="number" min="1" max="${Math.max(1,line.item.qty||1)}" value="${line.quantity}" onchange="app.setPosQty('${escapeHtml(line.key)}',this.value)" class="mt-1 w-full rounded bg-black/40 border border-white/10 px-2 text-white" /></label><label class="text-neutral-500">Unit price<input type="number" min="0" step="0.01" value="${Number(line.unitPrice).toFixed(2)}" onchange="app.setPosPrice('${escapeHtml(line.key)}',this.value)" class="mt-1 w-full rounded bg-black/40 border border-white/10 px-2 text-white" /></label><div class="text-right text-[11px] font-semibold text-emerald-300 pb-1">${money(line.lineTotal)}</div></div></div>`).join('') || '<div class="py-5 text-center text-[11px] text-neutral-500">Cart is empty. Add products or scan a barcode.</div>'}</div>
+            ${query ? `<section class="xl:col-span-3 rounded-2xl border border-white/10 bg-[#171717] p-3 space-y-2"><div class="flex items-center justify-between"><div class="text-xs font-semibold text-white">Search results</div><span class="text-[10px] text-neutral-500">${filtered.length} matches</span></div><div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[58vh] overflow-auto">${filtered.map(item=>`<div class="rounded-xl border border-white/10 bg-black/20 p-2.5 flex items-center justify-between gap-2"><div class="min-w-0"><div class="text-xs font-semibold text-white whitespace-normal break-words leading-tight">${escapeHtml(item.itemName || 'Unnamed item')}</div><div class="text-[10px] text-neutral-500 whitespace-normal break-all leading-tight mt-1">${escapeHtml(item.workbookName)} · ${escapeHtml(item.sheetName)} · ${escapeHtml(item.codes.join(' · ') || 'No identifier')} · Stock ${Number.isFinite(item.qty)?item.qty:'?'}</div><div class="text-xs text-emerald-300 mt-1">${Number.isFinite(item.unitPrice)&&item.unitPrice>=0?money(item.unitPrice):'Set price in cart'}</div></div><button type="button" onclick="app.addPosItem('${escapeHtml(item.key)}')" ${!Number.isFinite(item.qty)||item.qty<=0?'disabled':''} class="shrink-0 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-30">Add</button></div>`).join('') || '<div class="col-span-full py-8 text-center text-xs text-neutral-500">No matching products.</div>'}</div></section>` : `<div class="xl:col-span-3 rounded-2xl border border-dashed border-white/10 bg-[#171717]/50 p-6 text-center text-xs text-neutral-500">Search for a product to display matching items here.</div>`}
+            <section id="pos-cart-panel" class="xl:col-span-2 rounded-2xl border border-white/10 bg-[#171717] p-3 space-y-2"><div class="flex items-center justify-between"><h3 class="text-xs font-semibold text-white">Cart · ${lines.length} products</h3><button type="button" onclick="app.posCart=[];app.renderPosView(document.getElementById('main-view-container'))" class="text-[10px] text-rose-300">Clear</button></div><div class="space-y-1.5 max-h-[42vh] overflow-auto">${lines.map(line=>`<div class="pos-cart-line rounded-lg border border-white/5 bg-black/20"><div class="flex items-start justify-between gap-2"><div class="min-w-0 flex-1"><div class="pos-cart-name font-semibold text-white">${escapeHtml(line.item.itemName)}</div><div class="pos-cart-meta text-neutral-500 mt-1">${escapeHtml(line.item.workbookName)} · ${escapeHtml(line.item.sheetName)} · Available: ${line.item.qty}</div></div><button type="button" onclick="app.removePosItem('${escapeHtml(line.key)}')" class="text-rose-300 text-[10px] shrink-0">Remove</button></div><div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)_auto] items-end gap-2 mt-1.5"><label class="text-neutral-500">Qty<input type="number" min="1" max="${Math.max(1,line.item.qty||1)}" value="${line.quantity}" onchange="app.setPosQty('${escapeHtml(line.key)}',this.value)" class="mt-1 w-full rounded bg-black/40 border border-white/10 px-2 text-white" /></label><label class="text-neutral-500">Unit price<input type="number" min="0" step="0.01" value="${Number(line.unitPrice).toFixed(2)}" onchange="app.setPosPrice('${escapeHtml(line.key)}',this.value)" class="mt-1 w-full rounded bg-black/40 border border-white/10 px-2 text-white" /></label><div class="text-right text-[11px] font-semibold text-emerald-300 pb-1">${money(line.lineTotal)}</div></div></div>`).join('') || '<div class="py-5 text-center text-[11px] text-neutral-500">Cart is empty. Add products or scan a barcode.</div>'}</div>
               <div class="border-t border-white/10 pt-3 space-y-3"><div class="flex justify-between text-base font-bold text-white"><span>Total</span><span>${money(total)}</span></div><label class="block text-xs text-neutral-300">Payment method<select onchange="app.setPosPayment(this.value)" class="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm text-white">${['Cash','Card','GCash','Maya','Other'].map(method=>`<option ${this.posPaymentMethod===method?'selected':''}>${method}</option>`).join('')}</select><span class="block text-[10px] text-neutral-500 mt-1">Records the selected method only. Does not charge cards or e-wallets.</span></label>${this.posPaymentMethod==='Cash'?`<label class="block text-xs text-neutral-300">Cash received<input type="number" min="${total}" step="0.01" value="${escapeHtml(this.posCashReceived)}" oninput="app.setPosCashReceived(this.value);const n=document.getElementById('pos-change-preview');if(n){const v=Number(this.value)-${total};n.textContent='Change: '+(Number.isFinite(v)&&v>=0?'₱'+v.toFixed(2):'—')}" class="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm text-white" /></label><div id="pos-change-preview" class="text-xs text-emerald-300">Change: ${this.posCashReceived && received>=total?money(change):'—'}</div>`:''}<button type="button" onclick="app.completePosSale()" ${!lines.length?'disabled':''} class="w-full rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-30 px-4 py-3 text-sm font-bold text-slate-950">Complete sale · ${money(total)}</button></div></section>
           </div>
           <section class="rounded-2xl border border-white/10 bg-[#171717] p-4"><div class="flex items-center justify-between gap-2"><h3 class="text-sm font-semibold text-white">Recent sales</h3><div class="flex items-center gap-3"><span class="text-[10px] text-neutral-500">Latest 20</span><button type="button" onclick="app.exportPosSales()" class="text-xs text-emerald-300">Export sales CSV</button></div></div><div class="mt-2 divide-y divide-white/5">${(this.sales||[]).slice(0,20).map(sale=>`<div class="py-2 flex flex-wrap items-center justify-between gap-2"><div><div class="text-xs font-semibold text-white">${escapeHtml(sale.id)} · ${money(sale.total)}</div><div class="text-[10px] text-neutral-500">${escapeHtml(new Date(sale.timestamp).toLocaleString())} · ${escapeHtml(sale.paymentMethod)} · ${escapeHtml(sale.actor||'Unknown')}</div></div><button type="button" onclick="app.printPosReceipt('${escapeHtml(sale.id)}')" class="text-xs text-emerald-300">Print receipt</button></div>`).join('') || '<div class="py-5 text-center text-xs text-neutral-500">No completed sales yet.</div>'}</div></section>
@@ -4391,12 +4391,12 @@ body {
         const operationLabel = ({receive:'Receive stock',issue:'Issue stock',adjust:'Adjust stock',transfer:'Transfer stock'})[this.operationType] || 'Receive stock';
         container.innerHTML = `
           <div class="space-y-4">
-            <div><div class="text-sm font-semibold text-white">Inventory Operations</div><p class="text-xs text-neutral-400 mt-1">Record controlled stock changes with references, notes, undo support, and an exportable movement trail.</p></div>
+            <div><div class="text-sm font-semibold text-white">Inventory Operations</div><p class="text-xs text-neutral-400 mt-1">Record stock changes in any imported workbook, with references, notes, multi-workbook undo support, and a combined movement trail.</p></div>
             <div class="grid grid-cols-2 lg:grid-cols-4 gap-2">
               <div class="rounded-xl border border-white/10 bg-[#1b1b1b] p-3"><div class="text-[10px] text-neutral-500 uppercase">Products</div><div class="text-xl font-bold text-white">${items.length.toLocaleString()}</div></div>
               <div class="rounded-xl border border-white/10 bg-[#1b1b1b] p-3"><div class="text-[10px] text-neutral-500 uppercase">Units on hand</div><div class="text-xl font-bold text-emerald-300">${items.reduce((sum,item)=>sum+(Number.isFinite(item.qty)?item.qty:0),0).toLocaleString()}</div></div>
               <div class="rounded-xl border border-white/10 bg-[#1b1b1b] p-3"><div class="text-[10px] text-neutral-500 uppercase">Low stock</div><div class="text-xl font-bold text-amber-300">${items.filter(item=>Number.isFinite(item.qty)&&item.qty>0&&item.qty<=this.lowStockThreshold).length}</div></div>
-              <div class="rounded-xl border border-white/10 bg-[#1b1b1b] p-3"><div class="text-[10px] text-neutral-500 uppercase">Movements</div><div class="text-xl font-bold text-white">${(this.workbook.inventoryHistory||[]).length}</div></div>
+              <div class="rounded-xl border border-white/10 bg-[#1b1b1b] p-3"><div class="text-[10px] text-neutral-500 uppercase">Movements</div><div class="text-xl font-bold text-white">${this.getAllInventoryHistory().length}</div></div>
             </div>
             <section class="rounded-2xl border border-white/10 bg-[#171717] p-4 sm:p-5 space-y-4">
               <div class="flex flex-wrap items-center justify-between gap-2"><div><h3 class="text-sm font-semibold text-white">New stock transaction</h3><p class="text-[11px] text-neutral-500">All quantities are whole units. Issues and transfers cannot exceed available stock.</p></div><div class="flex gap-2"><button type="button" onclick="app.undoEdit()" ${this.undoStack.length?'':'disabled'} class="px-3 py-2 rounded-lg bg-slate-800 text-xs text-white disabled:opacity-40">Undo</button><button type="button" onclick="app.redoEdit()" ${this.redoStack.length?'':'disabled'} class="px-3 py-2 rounded-lg bg-slate-800 text-xs text-white disabled:opacity-40">Redo</button></div></div>
@@ -4405,14 +4405,14 @@ body {
                   <label class="block text-xs text-neutral-300">Transaction type<select id="ops-type" onchange="app.setOperationType(this.value)" class="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm text-white"><option value="receive" ${this.operationType==='receive'?'selected':''}>Receive stock (+)</option><option value="issue" ${this.operationType==='issue'?'selected':''}>Issue stock (−)</option><option value="adjust" ${this.operationType==='adjust'?'selected':''}>Set stock quantity</option><option value="transfer" ${this.operationType==='transfer'?'selected':''}>Transfer between matching records</option></select></label>
                   <label class="block text-xs text-neutral-300">Product / source record<select id="ops-item" onchange="app.setOperationItem(this.value)" class="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm text-white">${options}</select></label>
                 </div>
-                <div class="grid grid-cols-2 gap-3"><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">Current quantity</div><div class="text-2xl font-bold text-white">${Number.isFinite(qty)?qty.toLocaleString():'Invalid'}</div></div><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">Selected worksheet</div><div class="text-sm font-semibold text-white mt-1 break-words">${escapeHtml(selected.sheetName)}</div><div class="text-[10px] text-neutral-500">Row ${selected.rowNumber}</div></div></div>
+                <div class="grid grid-cols-2 gap-3"><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">Current quantity</div><div class="text-2xl font-bold text-white">${Number.isFinite(qty)?qty.toLocaleString():'Invalid'}</div></div><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">Selected worksheet</div><div class="text-sm font-semibold text-white mt-1 break-words">${escapeHtml(selected.workbookName)} · ${escapeHtml(selected.sheetName)}</div><div class="text-[10px] text-neutral-500">Row ${selected.rowNumber}</div></div></div>
                 ${this.operationType==='transfer' ? `<label class="block text-xs text-neutral-300">Destination record<select id="ops-destination" onchange="app.setOperationDestination(this.value)" required class="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm text-white"><option value="">Choose matching destination…</option>${destinationOptions}</select><span class="block text-[10px] text-neutral-500 mt-1">Only records sharing at least one SKU/barcode identifier are available.</span></label>` : ''}
                 <label class="block text-xs text-neutral-300">${this.operationType==='adjust'?'New target quantity':'Quantity'}<input id="ops-quantity" type="number" min="${this.operationType==='adjust'?0:1}" step="1" required inputmode="numeric" placeholder="${this.operationType==='adjust'?'Enter final quantity':'Enter units'}" class="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm font-mono text-white" /></label>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3"><label class="block text-xs text-neutral-300">Reference number <input id="ops-reference" maxlength="120" placeholder="PO, issue slip, transfer ID…" class="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm text-white" /></label><label class="block text-xs text-neutral-300">Notes <input id="ops-notes" maxlength="500" placeholder="Reason or additional details…" class="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm text-white" /></label></div>
-                <div class="flex flex-wrap items-center justify-between gap-2 pt-1"><span class="text-[10px] text-neutral-500">Changes are saved in this workbook's local recovery snapshot.</span><button type="submit" class="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2.5 text-xs font-bold text-slate-950 hover:bg-emerald-400"><i data-lucide="check-circle-2" class="w-4 h-4"></i>${operationLabel}</button></div>
+                <div class="flex flex-wrap items-center justify-between gap-2 pt-1"><span class="text-[10px] text-neutral-500">Changes are saved to the selected workbook in the local multi-file recovery snapshot.</span><button type="submit" class="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2.5 text-xs font-bold text-slate-950 hover:bg-emerald-400"><i data-lucide="check-circle-2" class="w-4 h-4"></i>${operationLabel}</button></div>
               </form>
             </section>
-            <section class="rounded-2xl border border-white/10 bg-[#171717] p-4"><div class="flex flex-wrap items-center justify-between gap-2"><div><h3 class="text-sm font-semibold text-white">Recent stock movements</h3><p class="text-[10px] text-neutral-500">Latest 12 movements</p></div><button onclick="app.switchView('insights')" class="text-xs text-emerald-300">Open reports</button></div><div class="mt-3 divide-y divide-white/5">${(this.workbook.inventoryHistory||[]).slice(-12).reverse().map(h=>`<div class="py-2 flex flex-wrap justify-between gap-2"><div class="min-w-0"><div class="text-xs text-white">${escapeHtml(h.itemName||'Unnamed item')} <span class="text-neutral-500">· ${escapeHtml(h.action||'Movement')}</span></div><div class="text-[10px] text-neutral-500">${escapeHtml(h.sheetName)} · ${escapeHtml(h.timestamp)}${h.reference?` · Ref ${escapeHtml(h.reference)}`:''}</div>${h.notes?`<div class="text-[10px] text-neutral-400">${escapeHtml(h.notes)}</div>`:''}</div><div class="text-xs font-mono ${Number(h.quantityChange)<0?'text-rose-300':'text-emerald-300'}">${Number(h.quantityChange)>0?'+':''}${escapeHtml(h.quantityChange)}</div></div>`).join('') || '<div class="py-5 text-center text-xs text-neutral-500">No stock movements recorded yet.</div>'}</div></section>
+            <section class="rounded-2xl border border-white/10 bg-[#171717] p-4"><div class="flex flex-wrap items-center justify-between gap-2"><div><h3 class="text-sm font-semibold text-white">Recent stock movements</h3><p class="text-[10px] text-neutral-500">Latest 12 movements</p></div><button onclick="app.switchView('insights')" class="text-xs text-emerald-300">Open reports</button></div><div class="mt-3 divide-y divide-white/5">${this.getAllInventoryHistory().slice(0,12).map(h=>`<div class="py-2 flex flex-wrap justify-between gap-2"><div class="min-w-0"><div class="text-xs text-white">${escapeHtml(h.itemName||'Unnamed item')} <span class="text-neutral-500">· ${escapeHtml(h.action||'Movement')}</span></div><div class="text-[10px] text-neutral-500">${escapeHtml(h.workbookName || '')} · ${escapeHtml(h.sheetName)} · ${escapeHtml(h.timestamp)}${h.reference?` · Ref ${escapeHtml(h.reference)}`:''}</div>${h.notes?`<div class="text-[10px] text-neutral-400">${escapeHtml(h.notes)}</div>`:''}</div><div class="text-xs font-mono ${Number(h.quantityChange)<0?'text-rose-300':'text-emerald-300'}">${Number(h.quantityChange)>0?'+':''}${escapeHtml(h.quantityChange)}</div></div>`).join('') || '<div class="py-5 text-center text-xs text-neutral-500">No stock movements recorded yet.</div>'}</div></section>
           </div>`;
       },
 
@@ -4422,7 +4422,7 @@ body {
         const query = String(this.catalogSearchQuery || '').trim().toLowerCase();
         const filter = this.catalogStockFilter || 'all';
         const filtered = items.filter(item => {
-          const search = `${item.itemName} ${item.sheetName} ${item.codes.join(' ')} ${item.rowNumber}`.toLowerCase();
+          const search = `${item.itemName} ${item.workbookName} ${item.sheetName} ${item.codes.join(' ')} ${item.rowNumber}`.toLowerCase();
           const matchesQuery = !query || search.includes(query);
           const matchesStock = filter === 'all' ||
             (filter === 'low' && item.qty !== null && item.qty > 0 && item.qty <= this.lowStockThreshold) ||
@@ -4436,33 +4436,33 @@ body {
         const pageStart = this.catalogPage * pageSize;
         const pageItems = filtered.slice(pageStart, pageStart + pageSize);
         const rows = pageItems.map(item => {
-          const search = `${item.itemName} ${item.sheetName} ${item.codes.join(' ')} ${item.rowNumber}`.toLowerCase();
+          const search = `${item.itemName} ${item.workbookName} ${item.sheetName} ${item.codes.join(' ')} ${item.rowNumber}`.toLowerCase();
           const qtyClass = item.qty === 0 ? 'text-rose-300' : item.qty !== null && item.qty <= this.lowStockThreshold ? 'text-amber-300' : 'text-emerald-300';
-          return `<tr data-catalog-row data-qty="${item.qty === null ? 'NaN' : item.qty}" data-modified="${item.modified?'true':'false'}" data-search="${escapeHtml(search)}" class="border-t border-white/5"><td class="p-3"><div class="text-xs font-semibold text-white">${escapeHtml(item.itemName||'Unnamed item')}</div><div class="text-[10px] text-neutral-500 font-mono">${escapeHtml(item.codes.join(' · ')||'No identifier')}</div></td><td class="p-3 text-xs text-neutral-400">${escapeHtml(item.sheetName)} · ${item.rowNumber}</td><td class="p-3 text-right font-mono text-xs ${qtyClass}">${item.qty===null?'Invalid':item.qty.toLocaleString()}</td><td class="p-3 text-right"><button onclick="app.startOperationFor('${escapeHtml(item.key)}','receive')" class="rounded-lg bg-emerald-600 px-3 py-2 text-[10px] font-semibold text-white">Stock action</button></td></tr>`;
+          return `<tr data-catalog-row data-qty="${item.qty === null ? 'NaN' : item.qty}" data-modified="${item.modified?'true':'false'}" data-search="${escapeHtml(search)}" class="border-t border-white/5"><td class="p-3"><div class="text-xs font-semibold text-white">${escapeHtml(item.itemName||'Unnamed item')}</div><div class="text-[10px] text-neutral-500 font-mono">${escapeHtml(item.codes.join(' · ')||'No identifier')}</div></td><td class="p-3 text-xs text-neutral-400">${escapeHtml(item.workbookName)} · ${escapeHtml(item.sheetName)} · ${item.rowNumber}</td><td class="p-3 text-right font-mono text-xs ${qtyClass}">${item.qty===null?'Invalid':item.qty.toLocaleString()}</td><td class="p-3 text-right"><button onclick="app.startOperationFor('${escapeHtml(item.key)}','receive')" class="rounded-lg bg-emerald-600 px-3 py-2 text-[10px] font-semibold text-white">Stock action</button></td></tr>`;
         }).join('');
         const from = filtered.length ? pageStart + 1 : 0;
         const to = Math.min(pageStart + pageSize, filtered.length);
-        container.innerHTML = `<div class="space-y-4"><div><div class="text-sm font-semibold text-white">Product Catalog</div><p class="text-xs text-neutral-400 mt-1">A searchable cross-worksheet catalog built from your existing workbook records. The workbook remains the source of truth.</p></div><div class="flex flex-wrap items-center gap-3"><input value="${escapeHtml(this.catalogSearchQuery)}" oninput="app.filterCatalogRows(this.value)" placeholder="Search product, SKU, barcode, or worksheet…" class="min-w-0 flex-1 rounded-xl border border-white/10 bg-[#171717] px-4 py-3 text-sm text-white"/><select onchange="app.setCatalogStockFilter(this.value)" class="rounded-xl border border-white/10 bg-[#171717] px-3 py-3 text-xs text-white"><option value="all" ${filter==='all'?'selected':''}>All stock</option><option value="low" ${filter==='low'?'selected':''}>Low stock</option><option value="zero" ${filter==='zero'?'selected':''}>Out of stock</option><option value="modified" ${filter==='modified'?'selected':''}>Modified records</option></select><span class="text-xs text-neutral-400"><b id="catalog-visible-count">${filtered.length.toLocaleString()}</b> records</span></div><div class="flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-400"><span>Showing ${from.toLocaleString()}–${to.toLocaleString()} of ${filtered.length.toLocaleString()} · ${pageSize} per page</span><div class="flex items-center gap-2"><button onclick="app.setCatalogPage(0)" ${this.catalogPage===0?'disabled':''} class="rounded-lg border border-white/10 px-3 py-2 disabled:opacity-30">First</button><button onclick="app.setCatalogPage(${this.catalogPage-1})" ${this.catalogPage===0?'disabled':''} class="rounded-lg border border-white/10 px-3 py-2 disabled:opacity-30">Previous</button><span>Page ${this.catalogPage+1} / ${pageCount}</span><button onclick="app.setCatalogPage(${this.catalogPage+1})" ${this.catalogPage>=pageCount-1?'disabled':''} class="rounded-lg border border-white/10 px-3 py-2 disabled:opacity-30">Next</button><button onclick="app.setCatalogPage(${pageCount-1})" ${this.catalogPage>=pageCount-1?'disabled':''} class="rounded-lg border border-white/10 px-3 py-2 disabled:opacity-30">Last</button></div></div><div class="overflow-auto rounded-xl border border-white/10 bg-[#171717]"><table class="w-full min-w-[620px] text-left"><thead class="sticky top-0 bg-[#242424] text-[10px] uppercase tracking-wide text-neutral-400"><tr><th class="p-3">Product</th><th class="p-3">Worksheet / Row</th><th class="p-3 text-right">On hand</th><th class="p-3 text-right">Action</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="p-6 text-center text-xs text-neutral-500">No product records found.</td></tr>'}</tbody></table></div></div>`;
+        container.innerHTML = `<div class="space-y-4"><div><div class="text-sm font-semibold text-white">Product Catalog</div><p class="text-xs text-neutral-400 mt-1">A searchable catalog across all imported workbooks. Each original workbook remains independent and is the source of truth for its records.</p></div><div class="flex flex-wrap items-center gap-3"><input value="${escapeHtml(this.catalogSearchQuery)}" oninput="app.filterCatalogRows(this.value)" placeholder="Search product, SKU, barcode, workbook, or worksheet…" class="min-w-0 flex-1 rounded-xl border border-white/10 bg-[#171717] px-4 py-3 text-sm text-white"/><select onchange="app.setCatalogStockFilter(this.value)" class="rounded-xl border border-white/10 bg-[#171717] px-3 py-3 text-xs text-white"><option value="all" ${filter==='all'?'selected':''}>All stock</option><option value="low" ${filter==='low'?'selected':''}>Low stock</option><option value="zero" ${filter==='zero'?'selected':''}>Out of stock</option><option value="modified" ${filter==='modified'?'selected':''}>Modified records</option></select><span class="text-xs text-neutral-400"><b id="catalog-visible-count">${filtered.length.toLocaleString()}</b> records</span></div><div class="flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-400"><span>Showing ${from.toLocaleString()}–${to.toLocaleString()} of ${filtered.length.toLocaleString()} · ${pageSize} per page</span><div class="flex items-center gap-2"><button onclick="app.setCatalogPage(0)" ${this.catalogPage===0?'disabled':''} class="rounded-lg border border-white/10 px-3 py-2 disabled:opacity-30">First</button><button onclick="app.setCatalogPage(${this.catalogPage-1})" ${this.catalogPage===0?'disabled':''} class="rounded-lg border border-white/10 px-3 py-2 disabled:opacity-30">Previous</button><span>Page ${this.catalogPage+1} / ${pageCount}</span><button onclick="app.setCatalogPage(${this.catalogPage+1})" ${this.catalogPage>=pageCount-1?'disabled':''} class="rounded-lg border border-white/10 px-3 py-2 disabled:opacity-30">Next</button><button onclick="app.setCatalogPage(${pageCount-1})" ${this.catalogPage>=pageCount-1?'disabled':''} class="rounded-lg border border-white/10 px-3 py-2 disabled:opacity-30">Last</button></div></div><div class="overflow-auto rounded-xl border border-white/10 bg-[#171717]"><table class="w-full min-w-[620px] text-left"><thead class="sticky top-0 bg-[#242424] text-[10px] uppercase tracking-wide text-neutral-400"><tr><th class="p-3">Product</th><th class="p-3">Worksheet / Row</th><th class="p-3 text-right">On hand</th><th class="p-3 text-right">Action</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="p-6 text-center text-xs text-neutral-500">No product records found.</td></tr>'}</tbody></table></div></div>`;
       },
 
       renderInsightsView(container) {
         const data = this.getInventoryInsights();
         const card = (label, value, note, color='text-white') => `<div class="bg-[#1b1b1b] border border-white/10 rounded-xl p-3"><div class="text-[10px] uppercase tracking-wide text-neutral-500">${label}</div><div class="text-2xl font-bold ${color} mt-1">${value}</div><div class="text-[10px] text-neutral-500 mt-1">${note}</div></div>`;
-        const rowMarkup = r => `<div class="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-1 px-3 py-2 border-b border-white/5"><div class="min-w-0"><div class="text-xs text-white truncate">${escapeHtml(r.itemName || 'Unnamed item')}</div><div class="text-[10px] text-neutral-500">${escapeHtml(r.sheetName)} · Row ${r.rowNumber} · ${escapeHtml(r.codes.join(', ') || 'No code')}</div></div><div class="text-xs font-mono ${r.qty === 0 ? 'text-rose-300' : 'text-amber-300'}">${r.qty === null ? 'Invalid qty' : `${r.qty} in stock`}</div></div>`;
+        const rowMarkup = r => `<div class="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-1 px-3 py-2 border-b border-white/5"><div class="min-w-0"><div class="text-xs text-white truncate">${escapeHtml(r.itemName || 'Unnamed item')}</div><div class="text-[10px] text-neutral-500">${escapeHtml(r.workbookName || '')} · ${escapeHtml(r.sheetName)} · Row ${r.rowNumber} · ${escapeHtml(r.codes.join(', ') || 'No code')}</div></div><div class="text-xs font-mono ${r.qty === 0 ? 'text-rose-300' : 'text-amber-300'}">${r.qty === null ? 'Invalid qty' : `${r.qty} in stock`}</div></div>`;
         container.innerHTML = `
           <div class="space-y-4">
-            <div class="flex flex-wrap items-center justify-between gap-2"><div><div class="text-sm font-semibold text-white">Inventory Insights</div><div class="text-xs text-neutral-500">Cross-worksheet monitoring, stock health, reports, and recovery tools</div></div><div class="flex gap-2"><button onclick="app.undoEdit()" ${this.undoStack.length ? '' : 'disabled'} class="px-3 py-2 rounded-lg text-xs bg-slate-800 text-white disabled:opacity-40">↶ Undo</button><button onclick="app.redoEdit()" ${this.redoStack.length ? '' : 'disabled'} class="px-3 py-2 rounded-lg text-xs bg-slate-800 text-white disabled:opacity-40">↷ Redo</button></div></div>
-            <div class="grid grid-cols-2 lg:grid-cols-4 gap-2">${card('Total records', data.rows.length, `${this.workbook.worksheets.length} worksheets`)}${card('Units on hand', data.totalQty.toLocaleString(), 'Sum of recognized quantities', 'text-emerald-300')}${card('Low stock', data.low.length, `1 to ${this.lowStockThreshold} units`, 'text-amber-300')}${card('Zero stock', data.zero.length, 'Needs replenishment review', 'text-rose-300')}</div>
+            <div class="flex flex-wrap items-center justify-between gap-2"><div><div class="text-sm font-semibold text-white">Inventory Insights</div><div class="text-xs text-neutral-500">Combined monitoring across imported workbooks, stock health, reports, and recovery tools</div></div><div class="flex gap-2"><button onclick="app.undoEdit()" ${this.undoStack.length ? '' : 'disabled'} class="px-3 py-2 rounded-lg text-xs bg-slate-800 text-white disabled:opacity-40">↶ Undo</button><button onclick="app.redoEdit()" ${this.redoStack.length ? '' : 'disabled'} class="px-3 py-2 rounded-lg text-xs bg-slate-800 text-white disabled:opacity-40">↷ Redo</button></div></div>
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-2">${card('Total records', data.rows.length, `${this.getWorkspaceWorkbooks().reduce((sum, wb) => sum + (wb.worksheets?.length || 0), 0)} worksheets across ${this.getWorkspaceWorkbooks().length} files`)}${card('Units on hand', data.totalQty.toLocaleString(), 'Sum of recognized quantities', 'text-emerald-300')}${card('Low stock', data.low.length, `1 to ${this.lowStockThreshold} units`, 'text-amber-300')}${card('Zero stock', data.zero.length, 'Needs replenishment review', 'text-rose-300')}</div>
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <section class="bg-[#171717] border border-white/10 rounded-xl p-4 space-y-2 flex flex-col justify-between">
-                <div><div class="font-semibold text-sm">Find inventory</div><p class="text-xs text-neutral-400 mt-1">Use the workbook-wide search in Worksheet Grid to find an item by name, SKU, barcode, code, or worksheet.</p></div>
+                <div><div class="font-semibold text-sm">Find inventory</div><p class="text-xs text-neutral-400 mt-1">Search all imported workbooks by item name, SKU, barcode, code, worksheet, or workbook name.</p></div>
                 <button onclick="app.switchView('workspace')" class="self-start inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white"><i data-lucide="search" class="w-3.5 h-3.5"></i>Open global search</button>
               </section>
-              <section class="bg-[#171717] border border-white/10 rounded-xl p-3 space-y-3"><div class="font-semibold text-sm">Stock watch</div><label class="text-xs text-neutral-400">Low-stock threshold <input type="number" min="0" step="1" value="${this.lowStockThreshold}" onchange="app.setLowStockThreshold(this.value)" class="ml-2 w-20 bg-black/40 border border-white/10 rounded px-2 py-1 text-white"/></label><div class="text-xs text-amber-300">${data.low.length} items at or below threshold</div><div class="max-h-56 overflow-auto">${data.low.slice(0,100).map(rowMarkup).join('') || '<div class="text-xs text-neutral-500">No low-stock items at this threshold.</div>'}</div><div class="border-t border-white/10 pt-2"><div class="font-semibold text-sm">Duplicate identifiers</div><div class="text-[10px] text-neutral-500 mb-2">Exact normalized matches across code-like columns; review before merging.</div><div class="max-h-56 overflow-auto">${data.duplicates.slice(0,100).map(d => `<div class="py-2 border-b border-white/5"><div class="font-mono text-xs text-rose-300">${escapeHtml(d.code)}</div><div class="text-[10px] text-neutral-400">${d.matches.map(m => `${escapeHtml(m.sheetName)} · row ${m.rowNumber}`).join('  |  ')}</div></div>`).join('') || '<div class="text-xs text-neutral-500">No duplicate identifiers detected.</div>'}</div></div></section>
+              <section class="bg-[#171717] border border-white/10 rounded-xl p-3 space-y-3"><div class="font-semibold text-sm">Stock watch</div><label class="text-xs text-neutral-400">Low-stock threshold <input type="number" min="0" step="1" value="${this.lowStockThreshold}" onchange="app.setLowStockThreshold(this.value)" class="ml-2 w-20 bg-black/40 border border-white/10 rounded px-2 py-1 text-white"/></label><div class="text-xs text-amber-300">${data.low.length} items at or below threshold</div><div class="max-h-56 overflow-auto">${data.low.slice(0,100).map(rowMarkup).join('') || '<div class="text-xs text-neutral-500">No low-stock items at this threshold.</div>'}</div><div class="border-t border-white/10 pt-2"><div class="font-semibold text-sm">Duplicate identifiers</div><div class="text-[10px] text-neutral-500 mb-2">Exact normalized matches across code-like columns; review before merging.</div><div class="max-h-56 overflow-auto">${data.duplicates.slice(0,100).map(d => `<div class="py-2 border-b border-white/5"><div class="font-mono text-xs text-rose-300">${escapeHtml(d.code)}</div><div class="text-[10px] text-neutral-400">${d.matches.map(m => `${escapeHtml(m.workbookName || '')} · ${escapeHtml(m.sheetName)} · row ${m.rowNumber}`).join('  |  ')}</div></div>`).join('') || '<div class="text-xs text-neutral-500">No duplicate identifiers detected.</div>'}</div></div></section>
             </div>
             <section class="bg-[#171717] border border-white/10 rounded-xl p-3 space-y-3">
               <div class="flex flex-wrap items-center justify-between gap-2"><div><div class="font-semibold text-sm">Movement reports & reorder planning</div><div class="text-[10px] text-neutral-500">Movement history is recorded for quantity-changing inventory actions only.</div></div><div class="flex flex-wrap gap-2"><button onclick="app.exportMovementReport()" class="px-3 py-2 rounded-lg bg-slate-700 text-xs text-white">Export movements CSV</button><button onclick="app.exportReorderReport()" class="px-3 py-2 rounded-lg bg-amber-600 text-xs font-semibold text-black">Export reorder CSV</button><button onclick="app.exportPurchaseOrderDraft()" class="px-3 py-2 rounded-lg bg-indigo-600 text-xs font-semibold text-white">Purchase-order draft</button><button onclick="app.exportStocktakeTemplate()" class="px-3 py-2 rounded-lg bg-slate-700 text-xs text-white">Stocktake template</button><button onclick="app.printInventoryReport()" class="px-3 py-2 rounded-lg bg-emerald-600 text-xs font-semibold text-white">Print report / Save PDF</button></div></div>
-              <div class="grid grid-cols-2 lg:grid-cols-4 gap-2"><div class="bg-black/30 rounded-lg p-3"><div class="text-[10px] text-neutral-500">Recorded movements</div><div class="text-xl font-bold text-white">${(this.workbook.inventoryHistory || []).length}</div></div><div class="bg-black/30 rounded-lg p-3"><div class="text-[10px] text-neutral-500">Reorder candidates</div><div class="text-xl font-bold text-amber-300">${this.getReorderRecommendations().length}</div></div><div class="bg-black/30 rounded-lg p-3"><div class="text-[10px] text-neutral-500">Suggested units</div><div class="text-xl font-bold text-white">${this.getReorderRecommendations().reduce((sum, r) => sum + r.suggestedOrder, 0).toLocaleString()}</div></div><div class="bg-black/30 rounded-lg p-3"><div class="text-[10px] text-neutral-500">Target stock rule</div><div class="text-xl font-bold text-white">${Math.max(1, this.lowStockThreshold * 2)}</div></div></div>
+              <div class="grid grid-cols-2 lg:grid-cols-4 gap-2"><div class="bg-black/30 rounded-lg p-3"><div class="text-[10px] text-neutral-500">Recorded movements</div><div class="text-xl font-bold text-white">${this.getAllInventoryHistory().length}</div></div><div class="bg-black/30 rounded-lg p-3"><div class="text-[10px] text-neutral-500">Reorder candidates</div><div class="text-xl font-bold text-amber-300">${this.getReorderRecommendations().length}</div></div><div class="bg-black/30 rounded-lg p-3"><div class="text-[10px] text-neutral-500">Suggested units</div><div class="text-xl font-bold text-white">${this.getReorderRecommendations().reduce((sum, r) => sum + r.suggestedOrder, 0).toLocaleString()}</div></div><div class="bg-black/30 rounded-lg p-3"><div class="text-[10px] text-neutral-500">Target stock rule</div><div class="text-xl font-bold text-white">${Math.max(1, this.lowStockThreshold * 2)}</div></div></div>
               <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">${Object.values(this.getMovementPeriodSummary()).map(period=>`<div class="rounded-lg border border-white/5 bg-black/20 p-3"><div class="text-[10px] text-neutral-500">${period.label}</div><div class="mt-1 text-lg font-bold text-white">${period.transactions} movement(s)</div><div class="mt-1 text-[10px] text-neutral-400">Received +${period.received.toLocaleString()} · Issued −${period.issued.toLocaleString()}</div></div>`).join('')}</div>
               <div class="text-[10px] text-neutral-500">Suggested order quantity = target stock (2× low-stock threshold) minus current stock, with a minimum suggestion of 1. This is a planning estimate, not a purchase order.</div>
               <div class="max-h-64 overflow-auto rounded-lg border border-white/5"><table class="w-full text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-2">Item</th><th class="p-2">Worksheet / Row</th><th class="p-2">On hand</th><th class="p-2">Order suggestion</th></tr></thead><tbody>${this.getReorderRecommendations().slice(0,100).map(r => '<tr class="border-t border-white/5"><td class="p-2 text-white">' + escapeHtml(r.itemName) + '<div class="text-[10px] text-neutral-500">' + escapeHtml(r.codes.join(', ')) + '</div></td><td class="p-2 text-neutral-400">' + escapeHtml(r.sheetName) + ' / ' + r.rowNumber + '</td><td class="p-2 text-amber-300">' + r.qty + '</td><td class="p-2 text-emerald-300 font-semibold">' + r.suggestedOrder + '</td></tr>').join('') || '<tr><td colspan="4" class="p-3 text-neutral-500">No items need reorder review at this threshold.</td></tr>'}</tbody></table></div>
@@ -4472,12 +4472,12 @@ body {
             <section class="bg-[#171717] border border-white/10 rounded-xl p-3 space-y-3">
               <div class="flex flex-wrap items-center justify-between gap-2"><div><div class="font-semibold text-sm">Inventory valuation</div><div class="text-[10px] text-neutral-500">Uses recognized unit-cost columns × current quantity. Values are in the workbook's entered currency; mixed currencies are not converted.</div></div><button onclick="app.exportValuationReport()" class="rounded-lg bg-slate-700 px-3 py-2 text-xs text-white">Export valuation CSV</button></div>
               <div class="grid grid-cols-2 lg:grid-cols-3 gap-2"><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">Recognized inventory value</div><div class="mt-1 text-xl font-bold text-emerald-300">${money(a.totalInventoryValue)}</div></div><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">Records with unit cost</div><div class="mt-1 text-xl font-bold text-white">${a.valued.length}</div></div><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">Records missing usable cost</div><div class="mt-1 text-xl font-bold text-amber-300">${a.unvaluedRecords}</div></div></div>
-              <div class="max-h-56 overflow-auto rounded-lg border border-white/5"><table class="w-full text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-2">Item</th><th class="p-2">Supplier</th><th class="p-2 text-right">Qty</th><th class="p-2 text-right">Unit cost</th><th class="p-2 text-right">Value</th></tr></thead><tbody>${a.valued.slice().sort((x,y)=>y.inventoryValue-x.inventoryValue).slice(0,100).map(r=>`<tr class="border-t border-white/5"><td class="p-2 text-white">${escapeHtml(r.itemName)}<div class="text-[10px] text-neutral-500">${escapeHtml(r.sheetName)} · ${r.rowNumber}</div></td><td class="p-2 text-neutral-400">${escapeHtml(r.supplier||'Unassigned')}</td><td class="p-2 text-right">${r.qty}</td><td class="p-2 text-right">${money(r.unitCost)}</td><td class="p-2 text-right text-emerald-300">${money(r.inventoryValue)}</td></tr>`).join('')||'<tr><td colspan="5" class="p-3 text-neutral-500">No recognized unit-cost data. Supported headers include Unit Cost, Purchase Cost, Cost per Unit, and Average Cost.</td></tr>'}</tbody></table></div>
+              <div class="max-h-56 overflow-auto rounded-lg border border-white/5"><table class="w-full text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-2">Item</th><th class="p-2">Supplier</th><th class="p-2 text-right">Qty</th><th class="p-2 text-right">Unit cost</th><th class="p-2 text-right">Value</th></tr></thead><tbody>${a.valued.slice().sort((x,y)=>y.inventoryValue-x.inventoryValue).slice(0,100).map(r=>`<tr class="border-t border-white/5"><td class="p-2 text-white">${escapeHtml(r.itemName)}<div class="text-[10px] text-neutral-500">${escapeHtml(r.workbookName || '')} · ${escapeHtml(r.sheetName)} · ${r.rowNumber}</div></td><td class="p-2 text-neutral-400">${escapeHtml(r.supplier||'Unassigned')}</td><td class="p-2 text-right">${r.qty}</td><td class="p-2 text-right">${money(r.unitCost)}</td><td class="p-2 text-right text-emerald-300">${money(r.inventoryValue)}</td></tr>`).join('')||'<tr><td colspan="5" class="p-3 text-neutral-500">No recognized unit-cost data. Supported headers include Unit Cost, Purchase Cost, Cost per Unit, and Average Cost.</td></tr>'}</tbody></table></div>
             </section>
             <section class="bg-[#171717] border border-white/10 rounded-xl p-3 space-y-3">
               <div class="flex flex-wrap items-center justify-between gap-2"><div><div class="font-semibold text-sm">Stock aging</div><div class="text-[10px] text-neutral-500">Age is based on the latest recorded receipt when available, otherwise a recognized workbook date column. Unknown dates stay unclassified.</div></div><button onclick="app.exportAgingReport()" class="rounded-lg bg-slate-700 px-3 py-2 text-xs text-white">Export aging CSV</button></div>
               <div class="grid grid-cols-2 lg:grid-cols-5 gap-2"><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">Under 30 days</div><div class="text-xl font-bold text-emerald-300">${a.aging.under30.length}</div></div><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">30–59 days</div><div class="text-xl font-bold text-white">${a.aging.days30to59.length}</div></div><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">60–89 days</div><div class="text-xl font-bold text-amber-300">${a.aging.days60to89.length}</div></div><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">90+ days</div><div class="text-xl font-bold text-rose-300">${a.aging.days90plus.length}</div></div><div class="rounded-lg bg-black/30 p-3"><div class="text-[10px] text-neutral-500">No usable date</div><div class="text-xl font-bold text-neutral-300">${a.aging.noDate.length}</div></div></div>
-              <div class="max-h-48 overflow-auto rounded-lg border border-white/5"><table class="w-full text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-2">Item</th><th class="p-2">Age</th><th class="p-2">Date source</th><th class="p-2">On hand</th></tr></thead><tbody>${a.rows.filter(r=>r.ageDays!==null).sort((x,y)=>y.ageDays-x.ageDays).slice(0,60).map(r=>`<tr class="border-t border-white/5"><td class="p-2 text-white">${escapeHtml(r.itemName)}<div class="text-[10px] text-neutral-500">${escapeHtml(r.sheetName)} · ${r.rowNumber}</div></td><td class="p-2 ${r.ageDays>=90?'text-rose-300':r.ageDays>=60?'text-amber-300':'text-neutral-300'}">${r.ageDays} days</td><td class="p-2 text-neutral-400">${r.ageBasis}</td><td class="p-2 text-right">${r.qty===null?'Invalid':r.qty}</td></tr>`).join('')||'<tr><td colspan="4" class="p-3 text-neutral-500">No recognized receipt or date fields yet.</td></tr>'}</tbody></table></div>
+              <div class="max-h-48 overflow-auto rounded-lg border border-white/5"><table class="w-full text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-2">Item</th><th class="p-2">Age</th><th class="p-2">Date source</th><th class="p-2">On hand</th></tr></thead><tbody>${a.rows.filter(r=>r.ageDays!==null).sort((x,y)=>y.ageDays-x.ageDays).slice(0,60).map(r=>`<tr class="border-t border-white/5"><td class="p-2 text-white">${escapeHtml(r.itemName)}<div class="text-[10px] text-neutral-500">${escapeHtml(r.workbookName || '')} · ${escapeHtml(r.sheetName)} · ${r.rowNumber}</div></td><td class="p-2 ${r.ageDays>=90?'text-rose-300':r.ageDays>=60?'text-amber-300':'text-neutral-300'}">${r.ageDays} days</td><td class="p-2 text-neutral-400">${r.ageBasis}</td><td class="p-2 text-right">${r.qty===null?'Invalid':r.qty}</td></tr>`).join('')||'<tr><td colspan="4" class="p-3 text-neutral-500">No recognized receipt or date fields yet.</td></tr>'}</tbody></table></div>
             </section>
             <section class="bg-[#171717] border border-white/10 rounded-xl p-3 space-y-3">
               <div class="flex flex-wrap items-center justify-between gap-2"><div><div class="font-semibold text-sm">Consumption velocity & supplier analytics</div><div class="text-[10px] text-neutral-500">Based on the last 90 days of recorded ISSUE transactions. Transfers and adjustments are excluded. This is a movement-based proxy, not accounting inventory turnover.</div></div><button onclick="app.exportSupplierReport()" class="rounded-lg bg-slate-700 px-3 py-2 text-xs text-white">Export supplier CSV</button></div>
@@ -4649,8 +4649,8 @@ body {
         this._gridSearchIndexedWorkbook = null;
         this._gridSearchCache = null;
         this._gridSearchMatchedRows = null;
-        // POS remains scoped to the active workbook. Main Inventory scanning gets
-        // a separate index spanning every workbook currently open in the tab strip.
+        // Main Inventory and POS both use the workspace-wide index; their scanner
+        // camera state and duplicate-scan guards remain independent.
         this.codeIndex = this.workbook ? buildCodeIndex(this.workbook.worksheets, this.activeWorkbookTabIndex || 0, this.workbook.filename || '') : new Map();
         const books = Array.isArray(this.openWorkbooks) && this.openWorkbooks.length
           ? this.openWorkbooks
@@ -6972,7 +6972,7 @@ handleSetScannedItemQty(rawAddedQty) {
       const activeSheet = this.workbook.worksheets[this.activeSheetIdx];
       if (!activeSheet) return;
 
-      // Worksheet-grid search is workbook-wide: include matches from every sheet.
+      // Worksheet-grid search is workbook-wide: include matches from every sheet in every imported workbook.
       // Render a read-only result list with each row's own sheet/column labels so
       // sheets with different layouts are represented correctly.
       if (this.searchQuery.trim() !== '') {
@@ -6981,22 +6981,22 @@ handleSetScannedItemQty(rawAddedQty) {
         const matches = this._gridSearchMatchedQuery === rawQ
           ? (this._gridSearchMatchedRows || [])
           : [];
-        const resultsHtml = this._gridSearchMatchedQuery !== rawQ ? '<div class="py-12 text-center text-slate-400">Searching…</div>' : matches.length ? matches.slice(0, 300).map(({sheet, sheetIdx, rec, values}) => `
-          <article role="button" tabindex="0" aria-label="Open ${escapeHtml(sheet.sheetName)}, row ${rec.rowNumber}" onclick="app.openGridSearchResult(${sheetIdx}, ${Number(rec.rowNumber)})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();app.openGridSearchResult(${sheetIdx}, ${Number(rec.rowNumber)});}" class="flex flex-nowrap items-center gap-3 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 min-w-max whitespace-nowrap cursor-pointer hover:border-emerald-500/70 hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-colors">
-            <strong class="shrink-0 text-xs text-emerald-300">${escapeHtml(sheet.sheetName)}</strong>
+        const resultsHtml = this._gridSearchMatchedQuery !== rawQ ? '<div class="py-12 text-center text-slate-400">Searching…</div>' : matches.length ? matches.slice(0, 300).map(({sheet, sheetIdx, rec, values, workbookIdx, workbookName}) => `
+          <article role="button" tabindex="0" aria-label="Open ${escapeHtml(sheet.sheetName)}, row ${rec.rowNumber}" onclick="app.openGridSearchResult(${sheetIdx}, ${Number(rec.rowNumber)}, ${workbookIdx})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();app.openGridSearchResult(${sheetIdx}, ${Number(rec.rowNumber)}, ${workbookIdx});}" class="flex flex-nowrap items-center gap-3 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 min-w-max whitespace-nowrap cursor-pointer hover:border-emerald-500/70 hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-colors">
+            <strong class="shrink-0 text-xs text-emerald-300">${escapeHtml(workbookName || this.workbook?.filename || 'Workbook')} · ${escapeHtml(sheet.sheetName)}</strong>
             <span class="shrink-0 text-[10px] font-mono text-slate-500">Row ${rec.rowNumber}</span>
             ${values.filter(v => v.value !== '').map(v => `<span class="inline-flex shrink-0 items-baseline gap-1.5 text-xs"><span class="text-[10px] uppercase tracking-wide text-slate-500">${escapeHtml(v.header)}:</span><span class="text-slate-200">${escapeHtml(v.value)}</span></span>`).join('<span class="shrink-0 text-slate-700">·</span>')}
-          </article>`).join('') : '<div class="py-12 text-center text-slate-500">No matches found in any worksheet.</div>';
+          </article>`).join('') : '<div class="py-12 text-center text-slate-500">No matches found in any imported workbook.</div>';
         container.innerHTML = `
           <section class="flex-1 min-w-0 w-full overflow-hidden">
             <div class="p-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <div class="flex items-center gap-3 flex-1 min-w-[220px]">
                 <div class="relative flex-1 max-w-md"><i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
-                  <input id="worksheet-grid-search" type="text" value="${escapeHtml(this.searchQuery)}" oninput="app.handleGridSearch(this)" placeholder="Search all worksheets..." class="w-full min-w-0 pl-9 pr-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500" />
+                  <input id="worksheet-grid-search" type="text" value="${escapeHtml(this.searchQuery)}" oninput="app.handleGridSearch(this)" placeholder="Search all imported workbooks..." class="w-full min-w-0 pl-9 pr-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500" />
                 </div>
                 <button onclick="app.toggleGridModifiedFilter()" class="px-3 py-2 rounded-lg text-xs border ${this.filterModifiedOnly ? 'bg-amber-500/20 border-amber-500/40 text-amber-300' : 'bg-slate-950 border-slate-800 text-slate-400'}">Modified Only</button>
               </div>
-              <span class="text-xs text-slate-400">${this._gridSearchMatchedQuery !== rawQ ? 'Searching…' : `${matches.length} match${matches.length === 1 ? '' : 'es'} across all worksheets`}</span>
+              <span class="text-xs text-slate-400">${this._gridSearchMatchedQuery !== rawQ ? 'Searching…' : `${matches.length} match${matches.length === 1 ? '' : 'es'} across all imported workbooks`}</span>
             </div>
             <div class="p-3 space-y-2 max-h-[calc(100vh-250px)] overflow-auto overscroll-contain">${resultsHtml}</div>
           </section>`;
@@ -7511,7 +7511,7 @@ handleSetScannedItemQty(rawAddedQty) {
       renderActivityLogView(container) {
         const q = String(this.activitySearchQuery || '').trim().toLowerCase();
         const all = Array.isArray(this.activityLogs) ? this.activityLogs : [];
-        const filtered = (q ? all.filter(e => [e.actor,e.action,e.itemName,e.barcode,e.sheetName,e.details,e.reference].join(' ').toLowerCase().includes(q)) : all)
+        const filtered = (q ? all.filter(e => [e.actor,e.action,e.itemName,e.barcode,e.workbookName,e.sheetName,e.details,e.reference].join(' ').toLowerCase().includes(q)) : all)
           .slice().sort((a,b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
         const dateKeyFor = value => {
           const d = new Date(value);
@@ -7534,18 +7534,22 @@ handleSetScannedItemQty(rawAddedQty) {
         const selectedEvents = this.activitySelectedDate ? (grouped.get(this.activitySelectedDate) || []) : [];
         const shown = selectedEvents.slice(0,1000);
         const itemLabelFor = e => {
+          const wbIdx = Number.isInteger(Number(e.workbookIdx)) ? Number(e.workbookIdx) : (this.activeWorkbookTabIndex || 0);
+          const targetWorkbook = this.getWorkspaceWorkbooks()[wbIdx];
           const idx = e.sheetIdx !== '' && e.sheetIdx !== undefined ? Number(e.sheetIdx) :
-            (e.sheetName && this.workbook?.worksheets ? this.workbook.worksheets.findIndex(ws => ws.sheetName === e.sheetName) : -1);
-          const sheet = idx >= 0 ? this.workbook?.worksheets?.[idx] : null;
+            (e.sheetName && targetWorkbook?.worksheets ? targetWorkbook.worksheets.findIndex(ws => ws.sheetName === e.sheetName) : -1);
+          const sheet = idx >= 0 ? targetWorkbook?.worksheets?.[idx] : null;
           const record = sheet && e.rowNumber !== '' ? sheet.records?.find(rec => Number(rec.rowNumber) === Number(e.rowNumber)) : null;
           return this.getItemNameForRecord(sheet, record) || e.itemName || (e.category === 'session' ? 'User session' : e.category === 'system' ? 'Workspace activity' : 'Inventory record');
         };
         const locationFor = e => {
+          const wbIdx = Number.isInteger(Number(e.workbookIdx)) ? Number(e.workbookIdx) : (this.activeWorkbookTabIndex || 0);
+          const targetWorkbook = this.getWorkspaceWorkbooks()[wbIdx];
           let idx = e.sheetIdx !== '' && e.sheetIdx !== undefined ? Number(e.sheetIdx) :
-            (e.sheetName && this.workbook?.worksheets ? this.workbook.worksheets.findIndex(ws => ws.sheetName === e.sheetName) : -1);
+            (e.sheetName && targetWorkbook?.worksheets ? targetWorkbook.worksheets.findIndex(ws => ws.sheetName === e.sheetName) : -1);
           const hasRow = e.rowNumber !== '' && e.rowNumber !== null && e.rowNumber !== undefined && Number.isFinite(Number(e.rowNumber));
-          if (idx < 0 || !hasRow || !this.workbook?.worksheets?.[idx]) return `<span class="text-neutral-500">${escapeHtml(e.sheetName || 'Workspace')} ${hasRow ? `· Row ${escapeHtml(e.rowNumber)}` : ''}</span>`;
-          return `<button onclick="app.openActivityLocation(${idx},${Number(e.rowNumber)})" class="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-300 hover:bg-emerald-500/20"><i data-lucide="external-link" class="h-3 w-3"></i>${escapeHtml(e.sheetName)} · Row ${escapeHtml(e.rowNumber)} · Open row</button>`;
+          if (idx < 0 || !hasRow || !targetWorkbook?.worksheets?.[idx]) return `<span class="text-neutral-500">${escapeHtml(e.workbookName || 'Workspace')} · ${escapeHtml(e.sheetName || 'Workspace')} ${hasRow ? `· Row ${escapeHtml(e.rowNumber)}` : ''}</span>`;
+          return `<button onclick="app.openActivityLocation(${idx},${Number(e.rowNumber)},${wbIdx})" class="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-300 hover:bg-emerald-500/20"><i data-lucide="external-link" class="h-3 w-3"></i>${escapeHtml(e.workbookName || targetWorkbook.filename || 'Workbook')} · ${escapeHtml(e.sheetName)} · Row ${escapeHtml(e.rowNumber)} · Open row</button>`;
         };
         const rows = shown.map(e => `<tr class="border-t border-white/5 align-top hover:bg-white/[.025]"><td class="p-3 text-white"><div class="font-semibold">${escapeHtml(itemLabelFor(e))}</div><div class="mt-1"><span class="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[10px] text-neutral-300">${escapeHtml(String(e.action || '').replace(/_/g,' ').toLowerCase())}</span></div>${e.barcode?`<div class="mt-2 text-[10px] font-mono text-neutral-500">Barcode: ${escapeHtml(e.barcode)}</div>`:''}</td><td class="p-3 whitespace-nowrap font-mono text-neutral-400">${escapeHtml(fmt(e.timestamp))}</td><td class="p-3 whitespace-nowrap font-semibold text-emerald-300">${escapeHtml(e.actor || 'Unknown')}</td><td class="p-3">${locationFor(e)}</td><td class="p-3 max-w-sm whitespace-normal text-neutral-400">${e.previousValue!=='' && e.previousValue!==undefined ? `<div><span class="text-neutral-500">Before:</span> <span class="font-mono">${escapeHtml(e.previousValue)}</span></div>`:''}${e.newValue!=='' && e.newValue!==undefined ? `<div><span class="text-neutral-500">After:</span> <span class="font-mono text-white">${escapeHtml(e.newValue)}</span></div>`:''}${e.quantityChange!=='' && e.quantityChange!==undefined ? `<div class="mt-1 text-emerald-300">Qty change: ${Number(e.quantityChange)>0?'+':''}${escapeHtml(e.quantityChange)}</div>`:''}${e.details?`<div class="mt-1">${escapeHtml(e.details)}</div>`:''}${e.reference?`<div class="mt-1 text-[10px] text-neutral-500">Ref: ${escapeHtml(e.reference)}</div>`:''}</td></tr>`).join('');
         const exportDateKeys = Array.from(new Set(all.map(e => dateKeyFor(e.timestamp))));
@@ -7755,6 +7759,585 @@ handleSetScannedItemQty(rawAddedQty) {
       }
     };
 
+    // -----------------------------------------------------------------------
+    // Unified multi-workbook integration layer.
+    // Each imported workbook remains an independent Excel source; shared views
+    // aggregate records while every write is routed to its exact workbook/row.
+    // -----------------------------------------------------------------------
+    app.getWorkspaceWorkbooks = function() {
+      return Array.isArray(this.openWorkbooks) && this.openWorkbooks.length
+        ? this.openWorkbooks
+        : (this.workbook ? [this.workbook] : []);
+    };
+
+    app.getAllInventoryHistory = function() {
+      const rows = [];
+      this.getWorkspaceWorkbooks().forEach((wb, workbookIdx) => {
+        (Array.isArray(wb?.inventoryHistory) ? wb.inventoryHistory : []).forEach(entry => rows.push({
+          ...entry,
+          workbookIdx,
+          workbookName: entry.workbookName || wb.filename || `Workbook ${workbookIdx + 1}`
+        }));
+      });
+      return rows.sort((a,b) => {
+        const ta = new Date(a.timestamp || 0).getTime() || 0;
+        const tb = new Date(b.timestamp || 0).getTime() || 0;
+        return tb - ta;
+      });
+    };
+
+    app.markWorkbookModified = function(workbookIdx) {
+      const idx = Number.isInteger(Number(workbookIdx)) ? Number(workbookIdx) : (this.activeWorkbookTabIndex || 0);
+      const wb = this.getWorkspaceWorkbooks()[idx];
+      if (!wb) return;
+      if (!wb._uisSession || typeof wb._uisSession !== 'object') wb._uisSession = {};
+      wb._uisSession.pendingExportChanges = true;
+      if (idx === (this.activeWorkbookTabIndex || 0)) this._pendingExportChanges = true;
+      this._gridSearchIndexedWorkbook = null;
+      this._gridSearchCache = null;
+      this._gridSearchMatchedRows = null;
+      this.scheduleWorkspaceSave();
+    };
+
+    app.appendWorkbookAudit = function(workbookIdx, entry) {
+      const idx = Number.isInteger(Number(workbookIdx)) ? Number(workbookIdx) : (this.activeWorkbookTabIndex || 0);
+      const wb = this.getWorkspaceWorkbooks()[idx];
+      if (!wb || !entry) return;
+      if (idx === (this.activeWorkbookTabIndex || 0)) {
+        if (!Array.isArray(this.auditLogs)) this.auditLogs = [];
+        this.auditLogs.unshift(entry);
+        if (this.auditLogs.length > 50000) this.auditLogs.length = 50000;
+        this.captureActiveWorkbookSession();
+      } else {
+        if (!wb._uisSession || typeof wb._uisSession !== 'object') wb._uisSession = {};
+        if (!Array.isArray(wb._uisSession.auditLogs)) wb._uisSession.auditLogs = [...(wb.initialAuditLogs || [])];
+        wb._uisSession.auditLogs.unshift(entry);
+        if (wb._uisSession.auditLogs.length > 50000) wb._uisSession.auditLogs.length = 50000;
+      }
+      this.markWorkbookModified(idx);
+    };
+
+    app.mergeWorkspaceSales = function(extraSales = []) {
+      const byId = new Map();
+      const add = sale => { if (sale && sale.id) byId.set(String(sale.id), sale); };
+      (Array.isArray(this.sales) ? this.sales : []).forEach(add);
+      (Array.isArray(extraSales) ? extraSales : []).forEach(add);
+      this.getWorkspaceWorkbooks().forEach(wb => (Array.isArray(wb?._uisSession?.sales) ? wb._uisSession.sales : []).forEach(add));
+      this.sales = [...byId.values()].sort((a,b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()).slice(0,50000);
+      return this.sales;
+    };
+
+    app.getOperationItems = function() {
+      const items = [];
+      this.getWorkspaceWorkbooks().forEach((workbook, workbookIdx) => {
+        (workbook?.worksheets || []).forEach((sheet, sheetIdx) => {
+          const headers = Array.isArray(sheet.headers) ? sheet.headers : [];
+          const nonNameOrBarcode = /barcode|\b(upc|ean|gtin|sku|code|qty|quantity|stock|price|srp|cost|msrp|retail|value|amount|date|time|phone|zip|postal|row|id)\b/i;
+          let nameHeader = null, bestLetters = -1;
+          headers.forEach(h => {
+            if (h.isFflz || h.isFullUpc || nonNameOrBarcode.test(String(h.name || ''))) return;
+            let letters = 0;
+            (sheet.records || []).forEach(record => {
+              const value = String(record.cells?.[h.colIndex]?.value ?? '').trim();
+              letters += (value.match(/[A-Za-z\u00C0-\u024F]/g) || []).length;
+            });
+            if (letters > bestLetters) { bestLetters = letters; nameHeader = h; }
+          });
+          const codeExcluded = /\b(price|srp|cost|msrp|retail|value|amount|qty|quantity|stock|date|time|phone|mobile|zip|postal|row|unit\s*price)\b/i;
+          let barcodeHeader = null, bestDigits = -1;
+          headers.forEach(h => {
+            if (h.isFflz || codeExcluded.test(String(h.name || '')) || (nameHeader && h.colIndex === nameHeader.colIndex)) return;
+            let digits = 0, populated = 0;
+            (sheet.records || []).forEach(record => {
+              const raw = h.isFullUpc || h.colIndex === sheet.fullUpcColIndex ? (record.currentFullUpcValue ?? '') : (record.cells?.[h.colIndex]?.value ?? '');
+              const value = String(raw).trim();
+              if (!value) return;
+              populated++;
+              digits += (value.match(/\d/g) || []).length;
+            });
+            if (populated && digits > bestDigits) { bestDigits = digits; barcodeHeader = h; }
+          });
+          const codeHeaders = barcodeHeader ? [barcodeHeader] : [];
+          const priceHeader = headers.filter(h => {
+            const name = String(h.name || '').trim();
+            return /(?:price\s*\/\s*srp|srp\s*\/\s*price|\bsrp\b|^(?:selling\s*)?price$|unit\s*price|retail\s*price|sales\s*price)/i.test(name) && !/cost|purchase|wholesale|buying/i.test(name);
+          }).sort((a,b) => {
+            const rank = h => {
+              const name = String(h.name || '').trim();
+              if (/price\s*\/\s*srp|srp\s*\/\s*price/i.test(name)) return 0;
+              if (/\bsrp\b/i.test(name)) return 1;
+              if (/^(?:selling\s*)?price$/i.test(name)) return 2;
+              if (/unit\s*price/i.test(name)) return 3;
+              if (/retail\s*price/i.test(name)) return 4;
+              return 5;
+            };
+            return rank(a) - rank(b);
+          })[0];
+          (sheet.records || []).forEach(record => {
+            const rawUnitPrice = priceHeader ? String(record.cells?.[priceHeader.colIndex]?.value ?? '').trim() : '';
+            const parsedUnitPrice = rawUnitPrice ? Number(rawUnitPrice.replace(/[^0-9.\-]/g, '')) : NaN;
+            const unitPrice = Number.isFinite(parsedUnitPrice) ? parsedUnitPrice : null;
+            const rawQty = record.currentFflzValue === '' ? 0 : Number(record.currentFflzValue);
+            const qty = Number.isFinite(rawQty) ? rawQty : null;
+            const itemName = String(nameHeader ? record.cells?.[nameHeader.colIndex]?.value || '' : record.itemName || `Row ${record.rowNumber}`).trim();
+            const codes = codeHeaders.map(h => String(h.isFullUpc || h.colIndex === sheet.fullUpcColIndex ? (record.currentFullUpcValue ?? '') : (record.cells?.[h.colIndex]?.value ?? '')).trim()).filter(Boolean);
+            const workbookName = String(workbook.filename || `Workbook ${workbookIdx + 1}`);
+            const item = {
+              workbookIdx, workbookName, workbook, sheetIdx, sheetName: sheet.sheetName, rowNumber: record.rowNumber,
+              itemName, qty, codes, unitPrice, priceColIndex: priceHeader?.colIndex ?? null,
+              modified: !!(record.isModified || record.isFullUpcModified || record.isNewRow),
+              key: `${workbookIdx}:${sheetIdx}:${record.rowNumber}`, sheet, record
+            };
+            item.label = `${item.itemName || 'Unnamed item'} · ${item.workbookName} · ${item.sheetName} · Row ${item.rowNumber}`;
+            items.push(item);
+          });
+        });
+      });
+      return items;
+    };
+
+    app.getInventoryInsights = function() {
+      const rows = [];
+      const duplicateMap = new Map();
+      this.getWorkspaceWorkbooks().forEach((workbook, workbookIdx) => {
+        (workbook?.worksheets || []).forEach((ws, sheetIdx) => {
+          const nameHeader = ws.headers.find(h => /item|product|description|name/i.test(h.name) && !h.isFflz && !h.isFullUpc);
+          const codeHeaders = ws.headers.filter(h => /barcode|\bcode\b|sku|upc|ean/i.test(h.name) && !h.isFflz && !h.isFullUpc);
+          ws.records.forEach(rec => {
+            const qty = Number(rec.currentFflzValue === '' ? 0 : rec.currentFflzValue);
+            const itemName = String(nameHeader ? rec.cells[nameHeader.colIndex]?.value || '' : rec.itemName || `Row ${rec.rowNumber}`).trim();
+            const codes = codeHeaders.map(h => String(rec.cells[h.colIndex]?.value || '').trim()).filter(Boolean);
+            const readHeader = pattern => {
+              const header = ws.headers.find(h => pattern.test(String(h.name || '')) && !h.isFflz && !h.isFullUpc);
+              return header ? String(rec.cells[header.colIndex]?.value ?? '').trim() : '';
+            };
+            const rawCost = readHeader(/^(unit\s*)?(purchase\s*)?cost$|^cost\s*per\s*unit$|^average\s*cost$|^unit\s*price$|^acquisition\s*cost$/i);
+            const costText = String(rawCost).replace(/[,$₱€£¥\s]/g, '').replace(/[A-Za-z]{3}/g, '');
+            const unitCost = rawCost !== '' && Number.isFinite(Number(costText)) ? Number(costText) : null;
+            const supplier = readHeader(/supplier|vendor|manufacturer/i);
+            const dateText = readHeader(/last\s*received|date\s*received|received\s*date|purchase\s*date|date\s*purchased|stock\s*date|date\s*added|created\s*date/i);
+            const row = { workbookIdx, workbookName: String(workbook.filename || `Workbook ${workbookIdx + 1}`), sheetIdx, sheetName: ws.sheetName, rowNumber: rec.rowNumber, itemName, qty: Number.isFinite(qty) ? qty : null, codes, modified: !!(rec.isModified || rec.isFullUpcModified || rec.isNewRow), unitCost, supplier, sourceDate: dateText };
+            rows.push(row);
+            codes.forEach(code => {
+              const key = code.toUpperCase().replace(/\s+/g, '');
+              if (!key) return;
+              if (!duplicateMap.has(key)) duplicateMap.set(key, []);
+              duplicateMap.get(key).push(row);
+            });
+          });
+        });
+      });
+      const duplicates = [...duplicateMap.entries()].filter(([, matches]) => matches.length > 1).map(([code, matches]) => ({ code, matches }));
+      return { rows, duplicates, low: rows.filter(r => r.qty !== null && r.qty > 0 && r.qty <= this.lowStockThreshold), zero: rows.filter(r => r.qty === 0), modified: rows.filter(r => r.modified), totalQty: rows.reduce((sum, r) => sum + (r.qty || 0), 0) };
+    };
+
+    app.getAdvancedInventoryAnalytics = function() {
+      const base = this.getInventoryInsights();
+      const history = this.getAllInventoryHistory();
+      const now = Date.now(), cutoff = now - 90 * 86400000;
+      const movementByRecord = new Map();
+      history.forEach(entry => {
+        const key = `${entry.workbookIdx}::${entry.sheetName}::${entry.rowNumber}`;
+        if (!movementByRecord.has(key)) movementByRecord.set(key, { issued90: 0, lastReceipt: null });
+        const stats = movementByRecord.get(key);
+        const date = this.parseInventoryDate(entry.timestamp);
+        const action = String(entry.action || '').toUpperCase();
+        const change = Number(entry.quantityChange);
+        if (date && date.getTime() >= cutoff && date.getTime() <= now && change < 0 && (action.includes('ISSUE') || action === 'POS_SALE')) stats.issued90 += Math.abs(change);
+        if (date && change > 0 && (action.includes('RECEIPT') || action.includes('RECEIVE')) && (!stats.lastReceipt || date > stats.lastReceipt)) stats.lastReceipt = date;
+      });
+      const rows = base.rows.map(row => {
+        const stats = movementByRecord.get(`${row.workbookIdx}::${row.sheetName}::${row.rowNumber}`) || { issued90: 0, lastReceipt: null };
+        const sourceDate = this.parseInventoryDate(row.sourceDate);
+        const ageDate = stats.lastReceipt || sourceDate;
+        const ageDays = ageDate ? Math.max(0, Math.floor((now - ageDate.getTime()) / 86400000)) : null;
+        const inventoryValue = row.qty !== null && row.unitCost !== null ? row.qty * row.unitCost : null;
+        const dailyIssueRate = stats.issued90 / 90;
+        const daysOfCover = dailyIssueRate > 0 && row.qty !== null ? row.qty / dailyIssueRate : null;
+        return { ...row, issued90: stats.issued90, dailyIssueRate, daysOfCover, ageDays, ageDate, inventoryValue, ageBasis: stats.lastReceipt ? 'Recorded receipt' : (sourceDate ? 'Workbook date field' : 'Unknown') };
+      });
+      const valued = rows.filter(r => r.inventoryValue !== null && Number.isFinite(r.inventoryValue));
+      const supplierMap = new Map();
+      rows.forEach(row => {
+        const name = String(row.supplier || '').trim() || 'Unassigned supplier';
+        if (!supplierMap.has(name)) supplierMap.set(name, { supplier: name, records: 0, units: 0, valuedRecords: 0, inventoryValue: 0, lowStock: 0 });
+        const group = supplierMap.get(name); group.records++; group.units += row.qty || 0;
+        if (row.inventoryValue !== null) { group.valuedRecords++; group.inventoryValue += row.inventoryValue; }
+        if (row.qty !== null && row.qty > 0 && row.qty <= this.lowStockThreshold) group.lowStock++;
+      });
+      return { rows, valued, totalInventoryValue: valued.reduce((sum,r)=>sum+r.inventoryValue,0), unvaluedRecords: rows.length-valued.length,
+        aging: { noDate: rows.filter(r=>r.ageDays===null), under30: rows.filter(r=>r.ageDays!==null&&r.ageDays<30), days30to59: rows.filter(r=>r.ageDays>=30&&r.ageDays<60), days60to89: rows.filter(r=>r.ageDays>=60&&r.ageDays<90), days90plus: rows.filter(r=>r.ageDays>=90) },
+        suppliers: [...supplierMap.values()].sort((a,b)=>b.inventoryValue-a.inventoryValue||b.units-a.units),
+        issued90: rows.reduce((sum,r)=>sum+r.issued90,0), velocityTracked: rows.filter(r=>r.issued90>0).length };
+    };
+
+    app.getMovementPeriodSummary = function() {
+      const history = this.getAllInventoryHistory(), now = Date.now();
+      const periods = [{key:'day',label:'Last 24 hours',cutoff:now-86400000},{key:'week',label:'Last 7 days',cutoff:now-7*86400000},{key:'month',label:'Last 30 days',cutoff:now-30*86400000}];
+      const summary = {};
+      periods.forEach(period => {
+        const entries = history.filter(entry => { const date=this.parseInventoryDate(entry.timestamp); return date && date.getTime()>=period.cutoff && date.getTime()<=now; });
+        summary[period.key] = { label:period.label, transactions:entries.length, received:entries.filter(e=>Number(e.quantityChange)>0).reduce((sum,e)=>sum+Number(e.quantityChange),0), issued:Math.abs(entries.filter(e=>Number(e.quantityChange)<0).reduce((sum,e)=>sum+Number(e.quantityChange),0)) };
+      });
+      return summary;
+    };
+
+    app.getOperationItem = function(key) { return this.getOperationItems().find(item => item.key === String(key)) || null; };
+
+    app.recordInventoryHistory = function(entry) {
+      if (!entry) return;
+      const workbookIdx = Number.isInteger(Number(entry.workbookIdx)) ? Number(entry.workbookIdx) : (this.activeWorkbookTabIndex || 0);
+      const workbook = this.getWorkspaceWorkbooks()[workbookIdx];
+      if (!workbook) return;
+      const previousQuantity = Number(entry.previousQuantity), newQuantity = Number(entry.newQuantity);
+      if (!Number.isFinite(previousQuantity) || !Number.isFinite(newQuantity) || previousQuantity === newQuantity || Number(entry.quantityChange) === 0) return;
+      if (!Array.isArray(workbook.inventoryHistory)) workbook.inventoryHistory = [];
+      workbook.inventoryHistory.push({ timestamp:entry.timestamp || new Date().toLocaleString(), workbookIdx, workbookName:workbook.filename || `Workbook ${workbookIdx+1}`,
+        sheetName:entry.sheetName||'', rowNumber:entry.rowNumber||'', itemName:entry.itemName||'', barcode:entry.barcode||'', previousQuantity:entry.previousQuantity??'', newQuantity:entry.newQuantity??'', quantityChange:entry.quantityChange??'', action:entry.action||'INVENTORY_UPDATE', reference:String(entry.reference||'').slice(0,120), notes:String(entry.notes||'').slice(0,500), destinationSheetName:entry.destinationSheetName||'', destinationRowNumber:entry.destinationRowNumber||'' });
+      this.markWorkbookModified(workbookIdx);
+    };
+
+    app.recordActivity = function(action, details = {}, options = {}) {
+      const workbookIdx = Number.isInteger(Number(details.workbookIdx)) ? Number(details.workbookIdx) : (this.activeWorkbookTabIndex || 0);
+      const workbook = this.getWorkspaceWorkbooks()[workbookIdx] || this.workbook;
+      const targetSheetIdx = details.sheetIdx !== undefined && details.sheetIdx !== '' ? Number(details.sheetIdx) :
+        (details.sheetName && workbook?.worksheets ? workbook.worksheets.findIndex(ws => ws.sheetName === details.sheetName) : -1);
+      const targetSheet = targetSheetIdx >= 0 ? workbook?.worksheets?.[targetSheetIdx] : null;
+      const targetRecord = targetSheet && details.rowNumber !== undefined && details.rowNumber !== '' ? targetSheet.records?.find(rec => Number(rec.rowNumber) === Number(details.rowNumber)) : null;
+      const detectedName = this.getItemNameForRecord(targetSheet, targetRecord) || details.itemName;
+      const event = { id:`activity-${Date.now()}-${Math.random().toString(36).slice(2,9)}`, timestamp:new Date().toISOString(), actor:this.getCurrentActor(),
+        action:String(action||'INVENTORY_CHANGE').slice(0,100), category:options.category||'inventory', itemName:String(detectedName||'').slice(0,180),
+        workbookIdx, workbookName:String(workbook?.filename || `Workbook ${workbookIdx+1}`).slice(0,180), sheetIdx:targetSheetIdx>=0?targetSheetIdx:'',
+        barcode:String(details.barcode||'').slice(0,120), sheetName:String(details.sheetName||'').slice(0,120), rowNumber:details.rowNumber??'',
+        previousValue:details.previousValue??'', newValue:details.newValue??'', quantityChange:details.quantityChange??'', reference:String(details.reference||'').slice(0,120), details:String(details.details||'').slice(0,600) };
+      if (!Array.isArray(this.activityLogs)) this.activityLogs=[];
+      this.activityLogs.unshift(event); if (this.activityLogs.length>20000) this.activityLogs.length=20000;
+      if (options.affectsWorkbook !== false) this.markWorkbookModified(workbookIdx); else this.scheduleWorkspaceSave();
+      if (this.activeView==='activity-log') this.renderMainView();
+      return event;
+    };
+
+    app.appendWorkbookAudit = function(workbookIdx, entry) {
+      const idx = Number(workbookIdx ?? this.activeWorkbookTabIndex ?? 0), wb = this.getWorkspaceWorkbooks()[idx];
+      if (!wb || !entry) return;
+      if (idx === (this.activeWorkbookTabIndex || 0)) {
+        if (!Array.isArray(this.auditLogs)) this.auditLogs=[];
+        this.auditLogs.unshift(entry); this.auditLogs.length=Math.min(this.auditLogs.length,50000);
+        this.captureActiveWorkbookSession();
+      } else {
+        wb._uisSession = wb._uisSession || {};
+        if (!Array.isArray(wb._uisSession.auditLogs)) wb._uisSession.auditLogs=[...(wb.initialAuditLogs||[])];
+        wb._uisSession.auditLogs.unshift(entry); wb._uisSession.auditLogs.length=Math.min(wb._uisSession.auditLogs.length,50000);
+      }
+      this.markWorkbookModified(idx);
+    };
+
+    // Keep sales as one workspace-wide ledger, while preserving older per-workbook sales.
+    const _uisRestoreSession = app.restoreActiveWorkbookSession.bind(app);
+    app.restoreActiveWorkbookSession = function(workbook) {
+      const prior = Array.isArray(this.sales) ? this.sales.slice() : [];
+      _uisRestoreSession(workbook);
+      this.mergeWorkspaceSales(prior);
+      if (workbook) this.captureActiveWorkbookSession();
+    };
+    app.mergeWorkspaceSales = function(extraSales = []) {
+      const byId = new Map();
+      const add = sale => { if (sale && sale.id) byId.set(String(sale.id), sale); };
+      (Array.isArray(this.sales)?this.sales:[]).forEach(add);
+      (Array.isArray(extraSales)?extraSales:[]).forEach(add);
+      this.getWorkspaceWorkbooks().forEach(wb => (Array.isArray(wb?._uisSession?.sales)?wb._uisSession.sales:[]).forEach(add));
+      this.sales = [...byId.values()].sort((a,b)=>new Date(b.timestamp||0).getTime()-new Date(a.timestamp||0).getTime()).slice(0,50000);
+      return this.sales;
+    };
+    const _uisInit = app.init.bind(app);
+    app.init = async function() { await _uisInit(); this.mergeWorkspaceSales(); if (this.workbook) this.captureActiveWorkbookSession(); };
+    const _uisRestoreBackup = app.restoreWorkspaceBackup.bind(app);
+    app.restoreWorkspaceBackup = async function(file) {
+      await _uisRestoreBackup(file);
+      this.mergeWorkspaceSales();
+      if (this.workbook) this.captureActiveWorkbookSession();
+      this.scheduleWorkspaceSave();
+      this.renderAll();
+    };
+    const _uisSingleUpload = app.handleSingleWorkbookUpload.bind(app);
+    app.handleSingleWorkbookUpload = async function(file) {
+      const previousSales = Array.isArray(this.sales)?this.sales.slice():[];
+      const previousCart = Array.isArray(this.posCart)?this.posCart.slice():[];
+      const previousReceipt = this.posLastReceipt;
+      await _uisSingleUpload(file);
+      this.mergeWorkspaceSales(previousSales);
+      this.posCart = previousCart;
+      this.posLastReceipt = previousReceipt;
+      if (this.workbook) this.captureActiveWorkbookSession();
+      this.scheduleWorkspaceSave();
+      if (this.activeView === 'pos') this.renderPosView(document.getElementById('main-view-container'));
+    };
+
+    // Barcode and POS both use the same all-workbook index; their camera state and duplicate guards remain separate.
+    app.rebuildIndex = function() {
+      this._gridSearchIndexedWorkbook = null; this._gridSearchCache = null; this._gridSearchMatchedRows = null;
+      const books = this.getWorkspaceWorkbooks();
+      const globalIndex = new Map(), allEntries = [];
+      books.forEach((wb, workbookIdx) => {
+        if (!wb?.worksheets) return;
+        const partial = buildCodeIndex(wb.worksheets, workbookIdx, wb.filename || `Workbook ${workbookIdx+1}`);
+        (partial.allEntries||[]).forEach(entry => {
+          allEntries.push(entry);
+          [entry.normalizedCode, entry.normalizedCode?.length>6 ? entry.normalizedCode.slice(-6) : ''].forEach(key => {
+            if (!key) return;
+            const bucket = globalIndex.get(key)||[];
+            if (!bucket.some(p=>p.workbookIdx===entry.workbookIdx&&p.sheetIdx===entry.sheetIdx&&p.rowNumber===entry.rowNumber)) bucket.push(entry);
+            globalIndex.set(key,bucket);
+          });
+        });
+      });
+      globalIndex.allEntries=allEntries;
+      this.codeIndex=globalIndex;
+      this.inventoryCodeIndex=globalIndex;
+    };
+
+    // POS camera scan: preserve the barcode matching rules and resolve the unique row across all open files.
+    app.handlePosScannedBarcode = function(rawBarcodeString) {
+      const code = normalizeCodeString(rawBarcodeString);
+      if (!code) return false;
+      const now=Date.now();
+      if (code===this._posScanLastCode && now-(this._posScanLastAt||0)<1100) return false;
+      this._posScanLastCode=code; this._posScanLastAt=now;
+      const match=findByBarcode(code,this.codeIndex);
+      if (!match?.products?.length) { this.showToast(`POS: barcode not found (${code}).`,'error'); playScanSound('error'); return false; }
+      if (match.products.length>1) { this.showToast(`POS: ${match.products.length} products match this barcode across imported files. Use product search to choose the correct record.`,'error'); playScanSound('collision'); return false; }
+      const product=match.products[0];
+      const item=this.getOperationItem(`${product.workbookIdx??0}:${product.sheetIdx}:${product.rowNumber}`);
+      if (!item) { this.showToast('POS: matched inventory row is unavailable.','error'); return false; }
+      if (!Number.isFinite(item.qty)||item.qty<=0) { this.showToast(`POS: ${item.itemName} is out of stock.`,'error'); playScanSound('error'); return false; }
+      this.addPosItem(item.key); playScanSound('success');
+      try { if(navigator.vibrate) navigator.vibrate(45); } catch(_) {}
+      this.showToast(`Added to sale: ${item.itemName} · ${item.workbookName}. Scanner stopped. Hold the sphere again for the next item.`,'success');
+      return true;
+    };
+
+    // Multi-workbook undo snapshots are limited to the records affected by a transaction.
+    app.cloneWorkspaceState = function(workbookIndices) {
+      this.captureActiveWorkbookSession();
+      const books=this.getWorkspaceWorkbooks();
+      const indices=[...new Set((Array.isArray(workbookIndices)?workbookIndices:[this.activeWorkbookTabIndex||0]).map(Number).filter(i=>Number.isInteger(i)&&i>=0&&i<books.length))];
+      const clone=value => typeof structuredClone==='function' ? structuredClone(value) : JSON.parse(JSON.stringify(value));
+      return { workbookIndices:indices, workbookSnapshots:indices.map(index=>({index,workbook:clone(books[index])})), activeWorkbookTabIndex:this.activeWorkbookTabIndex||0, activeSheetIdx:this.activeSheetIdx||0 };
+    };
+    app.pushUndoState = function(label='Edit') {
+      const snapshot=this.cloneWorkspaceState(this._nextUndoWorkbookIndices);
+      if (!snapshot || !snapshot.workbookSnapshots.length) return;
+      snapshot.label=label; this.undoStack.push(snapshot); if(this.undoStack.length>this.historyLimit)this.undoStack.shift(); this.redoStack=[];
+    };
+    app.restoreEditSnapshot = function(snapshot) {
+      if (!snapshot) return;
+      if (Array.isArray(snapshot.workbookSnapshots)) {
+        snapshot.workbookSnapshots.forEach(entry=>{ if(this.openWorkbooks?.[entry.index]&&entry.workbook)this.openWorkbooks[entry.index]=entry.workbook; });
+        this.activeWorkbookTabIndex=Math.min(snapshot.activeWorkbookTabIndex||0,Math.max(0,this.openWorkbooks.length-1));
+        this.workbook=this.openWorkbooks[this.activeWorkbookTabIndex]||this.workbook;
+      } else if (snapshot.workbook) {
+        this.workbook=snapshot.workbook; this.openWorkbooks[this.activeWorkbookTabIndex]=this.workbook;
+      }
+      this.restoreActiveWorkbookSession(this.workbook);
+      this.activeSheetIdx=Math.min(snapshot.activeSheetIdx||0,Math.max(0,(this.workbook?.worksheets?.length||1)-1));
+      this._gridSearchIndexedWorkbook=null; this._gridSearchCache=null; this._gridSearchMatchedRows=null;
+      this.rebuildIndex(); this.scheduleWorkspaceSave(); this.renderAll(); this.showToast(`${snapshot.label||'Edit'} restored.`);
+    };
+    app.undoEdit = function() {
+      if(!this.undoStack.length){this.showToast('Nothing to undo.','error');return;}
+      const snapshot=this.undoStack.pop(); this.redoStack.push(this.cloneWorkspaceState(snapshot.workbookIndices)); this.restoreEditSnapshot(snapshot);
+      this.recordActivity('UNDO_CHANGE',{details:`Undid: ${snapshot?.label||'inventory edit'}.`},{affectsWorkbook:false});
+    };
+    app.redoEdit = function() {
+      if(!this.redoStack.length){this.showToast('Nothing to redo.','error');return;}
+      const snapshot=this.redoStack.pop(); this.undoStack.push(this.cloneWorkspaceState(snapshot.workbookIndices)); this.restoreEditSnapshot(snapshot);
+      this.recordActivity('REDO_CHANGE',{details:`Redid: ${snapshot?.label||'inventory edit'}.`},{affectsWorkbook:false});
+    };
+
+    // The existing stock transaction form now snapshots both sides of a cross-file transfer.
+    const _uisSubmitStock = app.submitStockTransaction.bind(app);
+    app.submitStockTransaction = function(event) {
+      const source=this.getOperationItem(document.getElementById('ops-item')?.value||this.operationSelectedKey);
+      const type=document.getElementById('ops-type')?.value||this.operationType;
+      const destination=type==='transfer'?this.getOperationItem(document.getElementById('ops-destination')?.value||this.operationDestinationKey):null;
+      this._nextUndoWorkbookIndices=[source?.workbookIdx, destination?.workbookIdx].filter(v=>Number.isInteger(v));
+      try { return _uisSubmitStock(event); } finally { this._nextUndoWorkbookIndices=null; }
+    };
+
+    // POS sale updates each exact workbook row and records one workspace-wide receipt.
+    app.completePosSale = function() {
+      const lines=this.getPosCartDetails();
+      if(!lines.length){this.showToast('Add at least one product to the cart.','error');return;}
+      const total=Math.round(lines.reduce((sum,line)=>sum+line.lineTotal,0)*100)/100;
+      const method=this.posPaymentMethod||'Cash';
+      const cashReceived=method==='Cash'?Number(String(this.posCashReceived).replace(/,/g,'')):total;
+      if(method==='Cash'&&(!Number.isFinite(cashReceived)||cashReceived<total)){this.showToast('Cash received must be at least the sale total.','error');return;}
+      for(const line of lines){
+        if(!Number.isSafeInteger(line.quantity)||line.quantity<1){this.showToast('Cart quantities must be whole numbers greater than zero.','error');return;}
+        if(!Number.isFinite(line.unitPrice)||line.unitPrice<0){this.showToast('Enter a valid price for every cart item.','error');return;}
+        const available=Number(line.item.record.currentFflzValue===''?0:line.item.record.currentFflzValue);
+        if(!Number.isSafeInteger(available)||available<line.quantity){this.showToast(`Insufficient stock for ${line.item.itemName} in ${line.item.workbookName}. Available: ${Number.isFinite(available)?available:'invalid'}.`,'error');return;}
+        const col=line.item.sheet.duplicateResolvedColIndex||line.item.sheet.fflzColIndex;
+        if(!col||(line.item.sheet.fflzStatus==='DUPLICATE_FLAGGED'&&!line.item.sheet.duplicateResolvedColIndex)){this.showToast(`Resolve the quantity column for ${line.item.workbookName} → ${line.item.sheetName} before selling this item.`,'error');return;}
+      }
+      const saleId=`POS-${new Date().toISOString().replace(/[-:TZ.]/g,'').slice(0,14)}-${String(Date.now()).slice(-4)}`;
+      const now=new Date().toISOString(), receiptLines=[];
+      try {
+        lines.forEach(line=>{
+          const item=line.item, workbookIdx=item.workbookIdx;
+          const change=this.updateManagedQuantity(item,Number(item.record.currentFflzValue===''?0:item.record.currentFflzValue)-line.quantity);
+          this.recordInventoryHistory({workbookIdx,timestamp:new Date(now).toLocaleString(),sheetName:item.sheetName,rowNumber:item.rowNumber,itemName:item.itemName,barcode:item.codes.join(' | '),previousQuantity:change.previous,newQuantity:change.next,quantityChange:change.delta,action:'POS_SALE',reference:saleId,notes:`Payment: ${method}`});
+          this.appendWorkbookAudit(workbookIdx,{id:`pos-${Date.now()}-${Math.random()}`,timestamp:new Date(now).toLocaleString(),sheetName:item.sheetName,cellAddress:change.cellAddress,previousValue:String(change.previous),newValue:String(change.next),operation:`POS_SALE · ${saleId}`});
+          this.recordActivity('POS_SALE',{workbookIdx,sheetIdx:item.sheetIdx,itemName:item.itemName,barcode:item.codes.join(' | '),sheetName:item.sheetName,rowNumber:item.rowNumber,previousValue:change.previous,newValue:change.next,quantityChange:change.delta,reference:saleId,details:`${line.quantity} unit(s) · ${method} · ₱${line.lineTotal.toFixed(2)}`},{category:'sales'});
+          receiptLines.push({workbookIdx,workbookName:item.workbookName,itemName:item.itemName,barcode:item.codes.join(' | '),sheetName:item.sheetName,rowNumber:item.rowNumber,quantity:line.quantity,unitPrice:line.unitPrice,lineTotal:line.lineTotal});
+        });
+        const sale={id:saleId,timestamp:now,actor:this.getCurrentActor(),paymentMethod:method,total,cashReceived:method==='Cash'?cashReceived:total,change:method==='Cash'?Math.round((cashReceived-total)*100)/100:0,lines:receiptLines};
+        this.sales.unshift(sale); if(this.sales.length>50000)this.sales.length=50000;
+        this.posLastReceipt=sale; this.posCart=[]; this.posCashReceived='';
+        this.getWorkspaceWorkbooks().forEach((wb,idx)=>{ if(wb){wb._uisSession=wb._uisSession||{};wb._uisSession.sales=this.sales;} });
+        this.rebuildIndex(); this.scheduleWorkspaceSave(); this.renderAll();
+        this.showToast(`Sale ${saleId} completed across ${new Set(receiptLines.map(line=>line.workbookIdx)).size} workbook(s). Total ₱${total.toFixed(2)}.`,'success');
+      } catch(error){this.showToast(error?.message||'The sale could not be completed.','error');}
+    };
+
+    app.exportPosSales = function() {
+      const rows=[];
+      (this.sales||[]).forEach(sale=>(sale.lines||[]).forEach(line=>rows.push([sale.id,sale.timestamp,sale.actor||'Unknown',sale.paymentMethod,line.itemName,line.barcode,line.workbookName||'',line.sheetName,line.rowNumber,line.quantity,line.unitPrice,line.lineTotal,sale.total,sale.paymentMethod==='Cash'?sale.cashReceived:'',sale.paymentMethod==='Cash'?sale.change:''])));
+      if(!rows.length){this.showToast('There are no completed sales to export yet.','error');return;}
+      this.downloadCsv('UIS_POS_Sales.csv',['Sale ID','Date / Time','Cashier','Payment Method','Item','Barcode / SKU','Workbook','Worksheet','Row','Quantity','Unit Price','Line Total','Sale Total','Cash Received','Change'],rows);
+      this.recordActivity('POS_SALES_EXPORTED',{details:`Exported ${rows.length} POS sale line(s) to CSV.`},{category:'sales',affectsWorkbook:false});
+      this.showToast('Workspace-wide POS sales report exported.');
+    };
+
+    // Search index for the worksheet grid spans every imported workbook.
+    app.buildGridSearchIndex = function() {
+      const books=this.getWorkspaceWorkbooks();
+      const signature=books.map((wb,i)=>`${i}:${wb?.filename||''}:${wb?.worksheets?.length||0}:${wb?.worksheets?.reduce((n,ws)=>n+(ws.records?.length||0),0)||0}`).join('|');
+      if(!books.length||this._gridSearchIndexedWorkbook===signature)return;
+      const cache=[];
+      books.forEach((wb,workbookIdx)=>(wb.worksheets||[]).forEach((sheet,sheetIdx)=>(sheet.records||[]).forEach(rec=>{
+        const values=(sheet.headers||[]).map(h=>({header:h.name,value:String((h.isFullUpc?rec.currentFullUpcValue:rec.cells?.[h.colIndex]?.value)??'')}));
+        const all=values.map(v=>v.value).concat([String(rec.currentFflzValue??''),String(rec.currentFullUpcValue??'')]);
+        cache.push({workbookIdx,workbookName:wb.filename||`Workbook ${workbookIdx+1}`,sheet,sheetIdx,rec,values,text:all.join(' ').toLowerCase(),digits:all.map(v=>String(v).replace(/[^0-9]/g,'')),modified:!!(rec.isModified||rec.isFullUpcModified||rec.isNewRow)});
+      })));
+      this._gridSearchCache=cache; this._gridSearchIndexedWorkbook=signature; this._gridSearchMatchedRows=null;
+      const worker=this.ensureGridSearchWorker();
+      if(worker)worker.postMessage({type:'index',id:Date.now(),rows:cache.map(r=>({text:r.text,digits:r.digits,modified:r.modified}))});
+    };
+    app.openGridSearchResult = async function(sheetIdx,rowNumber,workbookIdx=this.activeWorkbookTabIndex||0) {
+      const targetBookIdx=Number(workbookIdx), targetSheetIdx=Number(sheetIdx), targetRow=Number(rowNumber);
+      if(targetBookIdx!== (this.activeWorkbookTabIndex||0)){
+        await this.switchWorkbookTab(targetBookIdx);
+        if((this.activeWorkbookTabIndex||0)!==targetBookIdx)return;
+      }
+      const sheet=this.workbook?.worksheets?.[targetSheetIdx];
+      if(!sheet||!Number.isFinite(targetRow)){this.showToast('The original worksheet row could not be located.','error');return;}
+      const rowIndex=sheet.records.findIndex(rec=>Number(rec.rowNumber)===targetRow);
+      if(rowIndex<0){this.showToast(`Could not locate row ${targetRow} in "${sheet.sheetName}".`,'error');return;}
+      clearTimeout(this._gridSearchTimer); this._gridSearchRequestId++; this._gridSearchMatchedRows=null; this._gridSearchMatchedQuery=''; this.searchQuery=''; this.filterModifiedOnly=false;
+      this.activeSheetIdx=targetSheetIdx; this.activeView='workspace';
+      const h=this.gridRowHeight*(this.gridZoom||1); this.gridScrollTop=Math.max(0,(rowIndex-4)*h); this.gridStartIndex=Math.max(0,Math.floor(this.gridScrollTop/h)-(this.gridOverscan||10));
+      this.toggleSidebarDrawer(false); this.renderAll(); const scroller=document.getElementById('virtual-worksheet-scroll'); if(scroller)scroller.scrollTop=this.gridScrollTop;
+      this.showToast(`Opened ${this.workbook.filename||'workbook'} → ${sheet.sheetName}, row ${targetRow}.`,'success');
+    };
+
+    app.openActivityLocation = async function(sheetIdx,rowNumber,workbookIdx=this.activeWorkbookTabIndex||0) {
+      const targetBookIdx=Number(workbookIdx);
+      if(targetBookIdx!==(this.activeWorkbookTabIndex||0)){
+        await this.switchWorkbookTab(targetBookIdx);
+        if((this.activeWorkbookTabIndex||0)!==targetBookIdx)return;
+      }
+      const idx=Number(sheetIdx), rowNum=Number(rowNumber), sheet=this.workbook?.worksheets?.[idx];
+      if(!sheet||!Number.isFinite(rowNum)){this.showToast('The original worksheet row could not be located.','error');return;}
+      const rowIndex=sheet.records.findIndex(rec=>Number(rec.rowNumber)===rowNum);
+      if(rowIndex<0){this.showToast(`Could not locate row ${rowNum} in "${sheet.sheetName}".`,'error');return;}
+      this.activeSheetIdx=idx; this.activeView='workspace'; this.searchQuery=''; this.filterModifiedOnly=false; this.activityFocusLocation={sheetIdx:idx,rowNumber:rowNum};
+      this.gridScrollTop=Math.max(0,(rowIndex-4)*this.gridRowHeight*(this.gridZoom||1)); this.gridStartIndex=Math.max(0,Math.floor(this.gridScrollTop/(this.gridRowHeight*(this.gridZoom||1)))-(this.gridOverscan||10));
+      this.toggleSidebarDrawer(false); this.renderAll(); requestAnimationFrame(()=>{const scroller=document.getElementById('virtual-worksheet-scroll');if(scroller)scroller.scrollTop=this.gridScrollTop;});
+    };
+
+    // Workspace dashboard and reporting aggregate every open workbook.
+    app.renderDashboardMetrics = function() {
+      const grid=document.getElementById('dashboard-metrics-grid'), dot=document.getElementById('drawer-badge-dot');
+      if(!grid||!this.getWorkspaceWorkbooks().length)return;
+      let totalItems=0,edited=0,fullUpc=0,issues=0;
+      this.getWorkspaceWorkbooks().forEach(wb=>(wb.worksheets||[]).forEach(ws=>{
+        totalItems+=(ws.records||[]).length;
+        if(ws.fflzStatus==='DUPLICATE_FLAGGED'&&!ws.duplicateResolvedColIndex)issues++;
+        (ws.records||[]).forEach(r=>{if(r.isModified||r.isFullUpcModified||r.isNewRow)edited++;if(String(r.currentFullUpcValue||'').trim()!=='')fullUpc++;if(r.validationError)issues++;});
+      }));
+      if(dot)dot.classList.toggle('hidden',!(edited>0||issues>0));
+      grid.innerHTML=`<div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">Imported Files</div><div class="text-base font-bold text-white">${this.getWorkspaceWorkbooks().length}</div></div><div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">Total Items</div><div class="text-base font-bold text-white">${totalItems}</div></div><div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">Edited Rows</div><div class="text-base font-bold text-emerald-400">${edited}</div></div><div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">FULL_UPC Saved</div><div class="text-base font-bold text-indigo-400">${fullUpc}</div></div><div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">Flags</div><div class="text-base font-bold ${issues?'text-rose-400':'text-neutral-300'}">${issues}</div></div>`;
+    };
+
+    app.exportMovementReport = function() {
+      const history=this.getAllInventoryHistory();
+      if(!history.length){this.showToast('There are no inventory movements in the imported files yet.','error');return;}
+      const headers=['Timestamp','Workbook','Worksheet','Row','Item','Barcode','Previous Quantity','New Quantity','Quantity Change','Action','Reference','Notes','Related Worksheet','Related Row'];
+      const rows=history.map(h=>[h.timestamp,h.workbookName,h.sheetName,h.rowNumber,h.itemName,h.barcode,h.previousQuantity,h.newQuantity,h.quantityChange,h.action,h.reference,h.notes,h.destinationSheetName,h.destinationRowNumber]);
+      this.downloadCsv('UIS_Inventory_Movement_Report.csv',headers,rows); this.showToast('All-workbook inventory movement CSV exported.');
+    };
+    app.exportReorderReport = function() {
+      const recs=this.getReorderRecommendations();
+      if(!recs.length){this.showToast('No reorder recommendations at the current threshold.','error');return;}
+      this.downloadCsv('UIS_Reorder_Recommendations.csv',['Workbook','Item','Worksheet','Row','Identifiers','Current Stock','Target Stock','Suggested Order'],recs.map(r=>[r.workbookName,r.itemName,r.sheetName,r.rowNumber,r.codes.join(' | '),r.qty,r.targetStock,r.suggestedOrder]));
+      this.showToast('All-workbook reorder CSV exported.');
+    };
+    app.exportPurchaseOrderDraft = function() {
+      const recs=this.getReorderRecommendations();
+      if(!recs.length){this.showToast('No low-stock items are ready for a purchase-order draft.','error');return;}
+      const analytics=this.getAdvancedInventoryAnalytics();
+      const costs=new Map(analytics.rows.map(r=>[`${r.workbookIdx}::${r.sheetName}::${r.rowNumber}`,r.unitCost]));
+      const reference=`UIS-PO-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${String(Date.now()).slice(-4)}`;
+      const headers=['Draft Reference','Workbook','Supplier','Item','Worksheet','Row','Identifiers','Current Stock','Target Stock','Order Quantity','Unit Cost','Estimated Line Total','Status'];
+      const rows=recs.map(r=>{const cost=costs.get(`${r.workbookIdx}::${r.sheetName}::${r.rowNumber}`)??'';return [reference,r.workbookName,r.supplier||'Unassigned',r.itemName,r.sheetName,r.rowNumber,r.codes.join(' | '),r.qty,r.targetStock,r.suggestedOrder,cost,cost===''?'':Number(cost)*r.suggestedOrder,'DRAFT - REVIEW BEFORE ORDERING'];});
+      this.downloadCsv(`${reference}_Purchase_Order_Draft.csv`,headers,rows); this.recordActivity('PURCHASE_ORDER_DRAFT_EXPORTED',{details:`Exported a workspace-wide draft with ${rows.length} suggested line item(s). No order was placed.`},{category:'system',affectsWorkbook:false});
+      this.showToast('Workspace-wide purchase-order draft exported. Review before ordering.');
+    };
+    app.exportStocktakeTemplate = function() {
+      const items=this.getOperationItems();
+      if(!items.length){this.showToast('No inventory records are available for a stocktake.','error');return;}
+      this.downloadCsv('UIS_Physical_Stocktake_Template.csv',['Workbook','Worksheet','Row','Item','Identifiers','System Quantity','Physical Count','Variance','Count Notes'],items.map(i=>[i.workbookName,i.sheetName,i.rowNumber,i.itemName,i.codes.join(' | '),i.qty??'','','','']));
+      this.recordActivity('STOCKTAKE_TEMPLATE_EXPORTED',{details:`Exported a workspace-wide count sheet for ${items.length} inventory record(s).`},{category:'system',affectsWorkbook:false});
+      this.showToast('All-workbook stocktake template exported.');
+    };
+    app.exportValuationReport = function() {
+      const a=this.getAdvancedInventoryAnalytics(); if(!a.valued.length){this.showToast('No usable unit-cost columns were found.','error');return;}
+      this.downloadCsv('UIS_Inventory_Valuation.csv',['Workbook','Item','Worksheet','Row','Identifiers','Supplier','On Hand','Unit Cost','Extended Inventory Value'],a.valued.map(r=>[r.workbookName,r.itemName,r.sheetName,r.rowNumber,r.codes.join(' | '),r.supplier,r.qty,r.unitCost,r.inventoryValue]));
+      this.showToast('All-workbook inventory valuation CSV exported.');
+    };
+    app.exportAgingReport = function() {
+      const rows=this.getAdvancedInventoryAnalytics().rows;
+      this.downloadCsv('UIS_Stock_Aging.csv',['Workbook','Item','Worksheet','Row','Identifiers','On Hand','Age Days','Age Basis','Age Date'],rows.map(r=>[r.workbookName,r.itemName,r.sheetName,r.rowNumber,r.codes.join(' | '),r.qty,r.ageDays??'Unknown',r.ageBasis,r.ageDate?r.ageDate.toISOString():'']));
+      this.showToast('All-workbook stock aging CSV exported.');
+    };
+    app.exportSupplierReport = function() {
+      const suppliers=this.getAdvancedInventoryAnalytics().suppliers;
+      this.downloadCsv('UIS_Supplier_Analytics.csv',['Supplier','Records','Units On Hand','Records With Cost','Inventory Value','Low Stock Records'],suppliers.map(s=>[s.supplier,s.records,s.units,s.valuedRecords,s.inventoryValue,s.lowStock]));
+      this.showToast('All-workbook supplier analytics CSV exported.');
+    };
+    app.printInventoryReport = function() {
+      if(!this.getWorkspaceWorkbooks().length)return;
+      const data=this.getInventoryInsights(), recs=this.getReorderRecommendations(), history=this.getAllInventoryHistory().slice(0,50);
+      const safe=v=>String(v??'').replace(/[&<>\"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+      const reorderRows=recs.map(r=>`<tr><td>${safe(r.workbookName)}</td><td>${safe(r.itemName)}</td><td>${safe(r.sheetName)} · ${r.rowNumber}</td><td>${r.qty}</td><td>${r.targetStock}</td><td>${r.suggestedOrder}</td></tr>`).join('');
+      const historyRows=history.map(h=>`<tr><td>${safe(h.timestamp)}</td><td>${safe(h.workbookName)}</td><td>${safe(h.itemName)}</td><td>${safe(h.action)}</td><td>${safe(h.previousQuantity)}</td><td>${safe(h.newQuantity)}</td><td>${safe(h.quantityChange)}</td></tr>`).join('');
+      const win=window.open('','_blank'); if(!win){this.showToast('Allow pop-ups to print the inventory report.','error');return;}
+      win.document.write(`<!doctype html><html><head><title>UIS Workspace Inventory Report</title><style>body{font:13px Arial,sans-serif;margin:28px;color:#222}table{border-collapse:collapse;width:100%;margin-top:10px}th,td{border:1px solid #ccc;padding:7px;text-align:left}th{background:#eee}</style></head><body><h1>UIS Workspace Inventory Report</h1><p>Generated ${safe(new Date().toLocaleString())} · ${this.getWorkspaceWorkbooks().length} imported file(s)</p><p>Records: ${data.rows.length} · Units: ${data.totalQty} · Low stock: ${data.low.length} · Zero stock: ${data.zero.length}</p><h2>Reorder recommendations</h2><table><thead><tr><th>Workbook</th><th>Item</th><th>Worksheet / Row</th><th>Current</th><th>Target</th><th>Order</th></tr></thead><tbody>${reorderRows||'<tr><td colspan="6">No recommendations</td></tr>'}</tbody></table><h2>Recent movements</h2><table><thead><tr><th>Timestamp</th><th>Workbook</th><th>Item</th><th>Action</th><th>Previous</th><th>New</th><th>Change</th></tr></thead><tbody>${historyRows||'<tr><td colspan="7">No movements recorded</td></tr>'}</tbody></table><script>window.onload=()=>window.print()<\/script></body></html>`); win.document.close();
+    };
+
+    // Export rows and UI labels identify the source file so identical sheet names/row numbers remain distinguishable.
+    app.openActivityLocation = app.openActivityLocation.bind(app);
+    const _uisSwitchWorkbook = app.switchWorkbookTab.bind(app);
+    app.switchWorkbookTab = async function(index) {
+      const cart=Array.isArray(this.posCart)?this.posCart.slice():[], receipt=this.posLastReceipt;
+      const undo=Array.isArray(this.undoStack)?this.undoStack.slice():[], redo=Array.isArray(this.redoStack)?this.redoStack.slice():[];
+      const keepPosView=this.activeView==='pos';
+      await _uisSwitchWorkbook(index);
+      this.posCart=cart; this.posLastReceipt=receipt; this.undoStack=undo; this.redoStack=redo;
+      if(keepPosView)this.activeView='pos';
+      this.renderAll();
+    };
     // Basic client-side gate only. Credentials are public because auth.js is served by GitHub Pages.
     window.UISAuth = {
       sessionKey: 'UIS_BASIC_AUTH_SESSION_V1',
