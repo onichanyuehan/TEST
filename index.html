@@ -574,8 +574,7 @@ body {
     }
 
     /* POS is a dedicated checkout surface: hide workbook-only controls while it is active. */
-    body.uis-pos-view #top-worksheet-selector,
-    body.uis-pos-view #top-worksheet-control > span:first-child,
+    body.uis-pos-view #top-worksheet-control,
     body.uis-pos-view #worksheet-sidebar-section { display: none !important; }
     body.uis-pos-view #top-pill-title { display: inline !important; }
 
@@ -759,7 +758,7 @@ body {
     </div>
 
     <!-- Top-bar worksheet selector -->
-    <div class="flex items-center gap-2 min-w-0 flex-1 justify-center px-2">
+    <div id="top-worksheet-control" class="flex items-center gap-2 min-w-0 flex-1 justify-center px-2">
       <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
       <select id="top-worksheet-selector" onchange="app.switchSheet(this.value)" aria-label="Select worksheet"
         class="min-w-0 max-w-[42vw] sm:max-w-[280px] bg-[#1a1a1a] hover:bg-[#242424] border border-white/10 rounded-full px-3 py-2 text-xs font-semibold text-neutral-100 outline-none focus:border-emerald-500/60">
@@ -3180,10 +3179,11 @@ body {
               };
               return rank(a) - rank(b);
             })[0];
-          const rawUnitPrice = priceHeader ? String(record.cells?.[priceHeader.colIndex]?.value ?? '').trim() : '';
-          const parsedUnitPrice = rawUnitPrice ? Number(rawUnitPrice.replace(/[^0-9.\-]/g, '')) : NaN;
-          const unitPrice = Number.isFinite(parsedUnitPrice) ? parsedUnitPrice : null;
           (sheet.records || []).forEach(record => {
+            // Resolve the selling price per row. `record` only exists inside this loop.
+            const rawUnitPrice = priceHeader ? String(record.cells?.[priceHeader.colIndex]?.value ?? '').trim() : '';
+            const parsedUnitPrice = rawUnitPrice ? Number(rawUnitPrice.replace(/[^0-9.\-]/g, '')) : NaN;
+            const unitPrice = Number.isFinite(parsedUnitPrice) ? parsedUnitPrice : null;
             const rawQty = record.currentFflzValue === '' ? 0 : Number(record.currentFflzValue);
             const qty = Number.isFinite(rawQty) ? rawQty : null;
             const itemName = String(nameHeader ? record.cells?.[nameHeader.colIndex]?.value || '' : record.itemName || `Row ${record.rowNumber}`).trim();
