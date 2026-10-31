@@ -619,7 +619,80 @@ body {
     #activity-log-table th,
     #activity-log-table td { line-height: 42px !important; }
     #activity-log-table-wrap { width: 100%; max-width: none; border-left: 0 !important; border-right: 0 !important; border-radius: 0 !important; }
-</style>
+
+    /* Clean, unified application header. Keep one menu trigger and one active-view label. */
+    header.sticky.uis-app-header {
+      position: sticky; top: 0; z-index: 30;
+      height: 64px !important;
+      padding-left: clamp(10px, 2.2vw, 28px) !important;
+      padding-right: clamp(10px, 2.2vw, 28px) !important;
+      display: grid; grid-template-columns: 42px minmax(0,1fr) auto;
+      align-items: center; gap: clamp(8px, 1.5vw, 18px);
+      width: 100%; min-height: 64px; height: 64px;
+      padding: 0 clamp(10px, 2.2vw, 28px) !important;
+      background: color-mix(in srgb, var(--uis-bg, #080d12) 88%, transparent) !important;
+      border-bottom: 1px solid var(--uis-line, rgba(148,163,184,.16)) !important;
+      box-shadow: 0 8px 28px rgba(0,0,0,.16);
+      -webkit-backdrop-filter: blur(18px) saturate(140%);
+      backdrop-filter: blur(18px) saturate(140%);
+    }
+    .uis-app-header .header-menu-button,
+    .uis-app-header .header-action {
+      position: relative; display: inline-flex; align-items: center; justify-content: center;
+      gap: 8px; min-width: 40px; min-height: 40px; padding: 0 11px;
+      border: 1px solid var(--uis-line, rgba(148,163,184,.16));
+      border-radius: 12px !important; background: rgba(255,255,255,.035);
+      color: var(--uis-text, #e8f0f4); font-size: 12px; font-weight: 650;
+      line-height: 1; white-space: nowrap !important;
+      transition: background .16s ease, border-color .16s ease, transform .16s ease;
+    }
+    .uis-app-header .header-menu-button { width: 40px; padding: 0; }
+    .uis-app-header .header-menu-button:hover,
+    .uis-app-header .header-action:hover { background: rgba(255,255,255,.09); border-color: rgba(148,163,184,.32); }
+    .uis-app-header .header-context { display:flex; align-items:center; justify-content:center; gap:10px; min-width:0; }
+    .uis-app-header .header-worksheet-control { display:flex; align-items:center; gap:8px; min-width:0; }
+    .uis-app-header .header-live-dot { width:7px; height:7px; flex:0 0 7px; border-radius:50%; background:var(--uis-accent,#38d6b0); box-shadow:0 0 0 4px rgba(56,214,176,.10); }
+    .uis-app-header #top-worksheet-selector {
+      width:auto; min-width:110px; max-width:min(34vw, 320px); min-height:38px;
+      padding:0 32px 0 12px !important; border:1px solid var(--uis-line) !important;
+      border-radius:11px !important; background:var(--uis-surface-2,#111d26) !important;
+      color:var(--uis-text,#e8f0f4) !important; font-size:12px; font-weight:600;
+    }
+    .uis-app-header .header-view-label {
+      display:inline-flex; align-items:center; min-height:32px; padding:0 11px;
+      border:1px solid var(--uis-line); border-radius:10px;
+      color:var(--uis-muted,#91a3b2); background:rgba(255,255,255,.025);
+      font-size:11px; font-weight:700; letter-spacing:.025em; white-space:nowrap;
+    }
+    .uis-app-header .header-actions { display:flex; align-items:center; justify-content:flex-end; gap:7px; min-width:0; }
+    .uis-app-header .header-action-import { color:var(--uis-accent,#38d6b0); }
+    .uis-app-header .header-action-scan { background:var(--uis-accent,#38d6b0); color:var(--uis-accent-contrast,#06231e); border-color:transparent; }
+    .uis-app-header .header-action-scan:hover { filter:brightness(1.06); background:var(--uis-accent,#38d6b0); }
+    .uis-app-header .header-action-export { color:var(--uis-text,#e8f0f4); }
+    body.uis-pos-view .uis-app-header .header-context { justify-content:center; }
+    body.uis-pos-view .uis-app-header .header-live-dot { display:none; }
+    @media (max-width: 700px) {
+      header.sticky.uis-app-header { grid-template-columns:40px minmax(0,1fr) auto; gap:7px; height:58px !important; min-height:58px; padding:0 9px !important; }
+      .uis-app-header .header-context { gap:6px; justify-content:flex-start; }
+      .uis-app-header #top-worksheet-selector { max-width:34vw; min-width:82px; min-height:36px; padding-left:9px !important; padding-right:24px !important; font-size:11px; }
+      .uis-app-header .header-view-label { min-height:30px; padding:0 8px; font-size:10px; }
+      .uis-app-header .header-actions { gap:5px; }
+      .uis-app-header .header-menu-button, .uis-app-header .header-action { min-width:36px; min-height:36px; width:36px; padding:0; border-radius:11px !important; }
+      .uis-app-header .header-action-label { display:none; }
+    }
+    @media (max-width: 380px) {
+      header.sticky.uis-app-header { grid-template-columns:36px minmax(0,1fr) auto; gap:5px; height:56px !important; padding:0 6px !important; }
+      .uis-app-header .header-context { gap:5px; }
+      .uis-app-header #top-worksheet-selector { max-width:29vw; min-width:70px; }
+      .uis-app-header .header-view-label { padding:0 6px; }
+      .uis-app-header .header-actions { gap:3px; }
+      .uis-app-header .header-menu-button, .uis-app-header .header-action { min-width:34px; width:34px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .uis-app-header .header-menu-button, .uis-app-header .header-action { transition:none !important; }
+    }
+
+  </style>
   <style id="uis-auth-gate-styles">
     body.uis-auth-locked { overflow: hidden !important; }
     body.uis-auth-locked > :not(#uis-auth-gate) { visibility: hidden !important; pointer-events: none !important; }
@@ -744,57 +817,40 @@ body {
   <!-- ====================================================================== -->
   <!-- CHATGPT MOBILE 2026 MINIMAL FLOATING TOP BAR -->
   <!-- ====================================================================== -->
-  <header class="sticky top-0 z-30 h-14 px-3 sm:px-5 flex items-center justify-between bg-[#0d0d0d]/85 backdrop-blur-md border-b border-white/[0.06]">
-    <!-- Left: Hamburger Drawer Button -->
-    <div class="flex items-center gap-2">
-      <button
-        onclick="app.toggleSidebarDrawer(true)"
-        class="p-2 rounded-full text-neutral-300 hover:text-white hover:bg-white/10 transition cursor-pointer relative"
-        aria-label="Open menu drawer"
-      >
-        <i data-lucide="menu" class="w-5 h-5"></i>
-        <span id="drawer-badge-dot" class="hidden absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-400"></span>
-      </button>
+  <header class="sticky top-0 z-30 uis-app-header">
+    <button
+      type="button"
+      onclick="app.toggleSidebarDrawer(true)"
+      class="header-menu-button"
+      aria-label="Open navigation menu"
+      title="Menu"
+    >
+      <i data-lucide="menu" class="w-5 h-5"></i>
+      <span id="drawer-badge-dot" class="hidden absolute top-2 right-2 w-2 h-2 rounded-full bg-emerald-400"></span>
+    </button>
+
+    <div class="header-context" aria-label="Current workspace">
+      <div id="top-worksheet-control" class="header-worksheet-control">
+        <span class="header-live-dot" aria-hidden="true"></span>
+        <select id="top-worksheet-selector" onchange="app.switchSheet(this.value)" aria-label="Select worksheet">
+          <option>Loading worksheets…</option>
+        </select>
+      </div>
+      <span class="header-view-label" aria-live="polite"><span id="top-pill-title">Scanner</span></span>
     </div>
 
-    <!-- Top-bar worksheet selector -->
-    <div id="top-worksheet-control" class="flex items-center gap-2 min-w-0 flex-1 justify-center px-2">
-      <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
-      <select id="top-worksheet-selector" onchange="app.switchSheet(this.value)" aria-label="Select worksheet"
-        class="min-w-0 max-w-[42vw] sm:max-w-[280px] bg-[#1a1a1a] hover:bg-[#242424] border border-white/10 rounded-full px-3 py-2 text-xs font-semibold text-neutral-100 outline-none focus:border-emerald-500/60">
-        <option>Loading worksheets…</option>
-      </select>
-      <button onclick="app.toggleSidebarDrawer(true)" class="inline-flex items-center gap-1 px-2.5 py-2 rounded-full bg-[#1a1a1a] border border-white/10 text-[11px] text-neutral-300" title="Interface views">
-        <span id="top-pill-title">Scanner</span><i data-lucide="chevron-down" class="w-3 h-3"></i>
+    <div class="header-actions" aria-label="Workbook actions">
+      <button type="button" onclick="document.getElementById('file-upload-input').click()"
+        class="header-action header-action-import" title="Import Excel Workbook (.xlsx)" aria-label="Import Excel workbook">
+        <i data-lucide="upload" class="w-4 h-4"></i><span class="header-action-label">Import</span>
       </button>
-    </div>
-
-    <!-- Right: Prominent Import .xlsx, Scan & Export Buttons -->
-    <div class="flex items-center gap-1.5">
-      <button
-        onclick="document.getElementById('file-upload-input').click()"
-        title="Import Excel Workbook (.xlsx)"
-        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-[#1a1a1a] hover:bg-[#262626] text-emerald-400 border border-emerald-500/30 transition cursor-pointer"
-      >
-        <i data-lucide="upload" class="w-3.5 h-3.5"></i>
-        <span>Import .xlsx</span>
+      <button type="button" id="btn-toggle-scanner" onclick="app.toggleCameraScanner()"
+        class="header-action header-action-scan" title="Toggle Live Camera Barcode Scanner" aria-label="Toggle barcode scanner">
+        <i data-lucide="camera" class="w-4 h-4"></i><span id="btn-scanner-label" class="header-action-label">Scan</span>
       </button>
-      <button
-        id="btn-toggle-scanner"
-        onclick="app.toggleCameraScanner()"
-        title="Toggle Live Camera Barcode Scanner"
-        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition cursor-pointer bg-white text-black hover:bg-neutral-200"
-      >
-        <i data-lucide="camera" class="w-3.5 h-3.5"></i>
-        <span id="btn-scanner-label" class="hidden sm:inline">Scan</span>
-      </button>
-      <button
-        onclick="app.handleRunExportAndVerify(true)"
-        title="Export Updated Excel (.xlsx)"
-        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-[#1a1a1a] hover:bg-[#262626] text-neutral-200 border border-white/10 transition cursor-pointer"
-      >
-        <i data-lucide="download" class="w-3.5 h-3.5 text-emerald-400"></i>
-        <span class="hidden md:inline">Export</span>
+      <button type="button" onclick="app.handleRunExportAndVerify(true)"
+        class="header-action header-action-export" title="Export Updated Excel (.xlsx)" aria-label="Export updated Excel workbook">
+        <i data-lucide="download" class="w-4 h-4"></i><span class="header-action-label">Export</span>
       </button>
     </div>
   </header>
