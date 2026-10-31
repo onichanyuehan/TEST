@@ -2830,12 +2830,31 @@ body {
             do {
               this._workspaceSaveQueued = false;
               const revisionAtStart = this._workspaceSaveRevision || 0;
+              // Capture the workbook before the asynchronous database open. The active
+              // workbook can be cleared/replaced while IndexedDB is opening; never dereference
+              // this.workbook after that await without checking it again.
+              const workbookForSnapshot = this.workbook;
+              if (!workbookForSnapshot?.originalBuffer) {
+                this._workspaceDirty = false;
+                return false;
+              }
               const db = await this.openWorkspaceDatabase();
               const status = document.getElementById('workspace-save-status');
+              if (this.workbook !== workbookForSnapshot) {
+                if (this.workbook?.originalBuffer) {
+                  this._workspaceSaveQueued = true;
+                  continue;
+                }
+                // Workspace was intentionally cleared while the save was waiting.
+                // Do not write a stale workbook back over the cleared workspace.
+                this._workspaceDirty = false;
+                if (status) status.textContent = 'No workbook loaded · nothing to save';
+                return false;
+              }
               if (status) status.textContent = 'Saving locally…';
               const snapshot = {
-                id: 'latest', schemaVersion: 5, savedAt: Date.now(), filename: this.workbook.filename || 'workbook.xlsx',
-                workbook: this.workbook, auditLogs: this.auditLogs || [], activityLogs: this.activityLogs || [], sales: this.sales || [],
+                id: 'latest', schemaVersion: 5, savedAt: Date.now(), filename: workbookForSnapshot.filename || 'workbook.xlsx',
+                workbook: workbookForSnapshot, auditLogs: this.auditLogs || [], activityLogs: this.activityLogs || [], sales: this.sales || [],
                 headerRowOverrides: this.headerRowOverrides || {}, activeSheetIdx: this.activeSheetIdx || 0,
                 activeView: this.activeView || 'scanner', pendingExportChanges: !!this._pendingExportChanges,
                 lastWorkbookExportAt: this._lastWorkbookExportAt || 0,
@@ -2962,7 +2981,7 @@ body {
           const status = document.getElementById('workspace-save-status');
           if (status) status.textContent = `Recovered locally · ${new Date(snapshot.savedAt || Date.now()).toLocaleTimeString()}${snapshot.id === 'previous' ? ' · previous recovery copy' : ''}`;
           const when = new Date(snapshot.savedAt || Date.now()).toLocaleString();
-          this.showToast(`Recovered "${snapshot.filename || this.workbook.filename}" from this browser (${when}).`);
+          this.showToast(`Recovered "${snapshot.filename || this.workbook?.filename || 'workbook'}" from this browser (${when}).`);
           // If recovery used the fallback copy, write it back as latest before
           // accepting new edits so the next save starts from a valid state.
           if (snapshot.id === 'previous') this.scheduleWorkspaceSave();
