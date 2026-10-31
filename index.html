@@ -3742,6 +3742,8 @@ body {
         if (this.activeView !== 'pos' || !this.workbook || this._posScanHoldActive) return;
         event?.preventDefault?.();
         this._posScanHoldActive = true;
+        this._posScanLastCode = '';
+        this._posScanLastAt = 0;
         const button = document.getElementById('pos-hold-scan-button');
         if (button) {
           button.classList.add('is-scanning');
@@ -3857,7 +3859,14 @@ body {
                 this._posScanLocked = true;
                 this._posScanLastCode = normalized;
                 this._posScanLastAt = Date.now();
-                this.handlePosScannedBarcode(code);
+                const itemAdded = this.handlePosScannedBarcode(code);
+                // POS is deliberately one-item-per-hold: stop the dedicated camera
+                // immediately after a successful cart addition. The next item requires
+                // a fresh press-and-hold gesture on the floating sphere.
+                if (itemAdded) {
+                  await this.endPosHoldScan();
+                  return;
+                }
               }
             } else if (++this._posScanMisses >= 5) this._posScanLocked = false;
           } catch (_) {
@@ -3887,38 +3896,40 @@ body {
       },
       handlePosScannedBarcode(rawBarcodeString) {
         const code = normalizeCodeString(rawBarcodeString);
-        if (!code) return;
+        if (!code) return false;
         const now = Date.now();
-        if (code === this._scanLastCode && now - (this._scanLastAt || 0) < 1100) return;
-        this._scanLastCode = code;
-        this._scanLastAt = now;
+        // POS uses its own duplicate guard; it must not share Main Inventory scanner state.
+        if (code === this._posScanLastCode && now - (this._posScanLastAt || 0) < 1100) return false;
+        this._posScanLastCode = code;
+        this._posScanLastAt = now;
         const match = findByBarcode(code, this.codeIndex);
         if (!match?.products?.length) {
           this.showToast(`POS: barcode not found (${code}).`, 'error');
           playScanSound('error');
-          return;
+          return false;
         }
         if (match.products.length > 1) {
           this.showToast(`POS: ${match.products.length} products match this barcode. Use product search to choose the correct item.`, 'error');
           playScanSound('collision');
-          return;
+          return false;
         }
         const product = match.products[0];
         const key = `${product.sheetIdx}:${product.rowNumber}`;
         const item = this.getOperationItem(key);
         if (!item) {
           this.showToast('POS: matched inventory row is unavailable.', 'error');
-          return;
+          return false;
         }
         if (!Number.isFinite(item.qty) || item.qty <= 0) {
           this.showToast(`POS: ${item.itemName} is out of stock.`, 'error');
           playScanSound('error');
-          return;
+          return false;
         }
         this.addPosItem(item.key);
         playScanSound('success');
         try { if (navigator.vibrate) navigator.vibrate(45); } catch (_) {}
-        this.showToast(`Added to sale: ${item.itemName}.` , 'success');
+        this.showToast(`Added to sale: ${item.itemName}. Scanner stopped. Hold the sphere again for the next item.`, 'success');
+        return true;
       },
 
       renderPosView(container) {
