@@ -688,7 +688,7 @@ body {
     }
     #pos-hold-scan-button:active, #pos-hold-scan-button.is-scanning { transform:translateX(-50%) scale(.94); box-shadow:0 0 0 13px rgba(56,214,176,.14),0 0 48px rgba(23,190,153,.55),inset 0 2px 8px rgba(255,255,255,.55); }
     #pos-hold-scan-button .pos-scan-caption { font-size:9px; font-weight:800; letter-spacing:.08em; }
-    #pos-camera-overlay { position:fixed; inset:0; z-index:90; display:flex; align-items:center; justify-content:center; padding:16px; background:rgba(2,8,12,.88); backdrop-filter:blur(14px); }
+    #pos-camera-overlay { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; padding:16px; background:rgba(2,8,12,.88); backdrop-filter:blur(14px); }
     #pos-camera-overlay.hidden { display:none; }
     #pos-camera-overlay .pos-camera-card { width:min(100%,560px); border:1px solid rgba(56,214,176,.28); border-radius:24px; padding:14px; background:#0d1921; box-shadow:0 24px 90px rgba(0,0,0,.6); }
     #pos-camera-reader { position:relative; min-height:260px; overflow:hidden; border-radius:16px; background:#000; }
@@ -2712,6 +2712,8 @@ body {
       _scanNativeDetector: null, _scanZXingReader: null, _scanDecoder: 'NONE',
       _scanActive: false, _scanRaf: null, _scanRoi: null, _scanLocked: false, _scanMisses: 0, _scanLastCode: '', _scanLastAt: 0, _scanLastFrameAt: 0,
       _scanPurpose: 'inventory', _scanHoldActive: false, _scanHostId: 'fflz-barcode-reader', _scanOverlayId: 'fflz-scan-overlay',
+      // POS scanner is deliberately isolated from the Main Inventory scanner state.
+      _posScanHoldActive: false, _posScanStream: null, _posScanVideo: null, _posScanDetector: null, _posScanReader: null, _posScanDecoder: 'NONE', _posScanCanvas: null, _posScanCtx: null, _posScanRaf: null, _posScanGeneration: 0, _posScanBusy: false, _posScanLocked: false, _posScanMisses: 0, _posScanLastCode: '', _posScanLastAt: 0, _posHoldPointerId: null, _posHoldListenersReady: false,
       lastScannedCode: { code: '', time: 0 },
       lastScanResult: null,
       _resumeCameraAfterScan: false,
@@ -3711,38 +3713,177 @@ body {
           button.id = 'pos-hold-scan-button'; button.type = 'button';
           button.setAttribute('aria-label', 'Press and hold to scan a product barcode');
           button.innerHTML = '<i data-lucide="scan-barcode" class="w-6 h-6"></i><span class="pos-scan-caption">HOLD TO SCAN</span>';
-          button.onpointerdown = event => this.beginPosHoldScan(event);
-          button.onpointerup = () => this.endPosHoldScan();
-          button.onpointercancel = () => this.endPosHoldScan();
-          button.oncontextmenu = event => event.preventDefault();
+          button.addEventListener('pointerdown', event => {
+            if (event.button != null && event.button !== 0) return;
+            event.preventDefault();
+            this._posHoldPointerId = event.pointerId;
+            this.beginPosHoldScan(event);
+          });
+          // Listen at document level so releasing outside the sphere still stops the camera.
+          if (!this._posHoldListenersReady) {
+            document.addEventListener('pointerup', event => {
+              if (this._posHoldPointerId == null || event.pointerId === this._posHoldPointerId) this.endPosHoldScan();
+            }, true);
+            document.addEventListener('pointercancel', event => {
+              if (this._posHoldPointerId == null || event.pointerId === this._posHoldPointerId) this.endPosHoldScan();
+            }, true);
+            window.addEventListener('blur', () => this.endPosHoldScan());
+            document.addEventListener('visibilitychange', () => { if (document.hidden) this.endPosHoldScan(); });
+            this._posHoldListenersReady = true;
+          }
+          button.addEventListener('contextmenu', event => event.preventDefault());
           document.body.appendChild(button);
         }
         button.style.display = this.activeView === 'pos' && !!this.workbook ? 'flex' : 'none';
-        if (this.activeView !== 'pos' && this._scanPurpose === 'pos') this.endPosHoldScan();
+        if (this.activeView !== 'pos' && this._posScanHoldActive) this.endPosHoldScan();
         if (window.lucide?.createIcons) lucide.createIcons();
       },
       async beginPosHoldScan(event) {
-        if (this.activeView !== 'pos' || this._scanHoldActive) return;
+        if (this.activeView !== 'pos' || !this.workbook || this._posScanHoldActive) return;
         event?.preventDefault?.();
-        this._scanHoldActive = true;
+        this._posScanHoldActive = true;
         const button = document.getElementById('pos-hold-scan-button');
         if (button) {
           button.classList.add('is-scanning');
-          button.querySelector('.pos-scan-caption').textContent = 'SCANNING';
-          try { if (event?.pointerId != null) button.setPointerCapture(event.pointerId); } catch (_) {}
+          const caption = button.querySelector('.pos-scan-caption');
+          if (caption) caption.textContent = 'SCANNING · RELEASE TO STOP';
         }
-        await this.startCameraScanner('pos');
+        await this.startPosCameraScanner();
       },
       async endPosHoldScan() {
-        if (!this._scanHoldActive && this._scanPurpose !== 'pos') return;
-        this._scanHoldActive = false;
+        if (!this._posScanHoldActive && !this._posScanStream && !this._posScanRaf) return;
+        this._posScanHoldActive = false;
+        this._posHoldPointerId = null;
         const button = document.getElementById('pos-hold-scan-button');
         if (button) {
           button.classList.remove('is-scanning');
           const caption = button.querySelector('.pos-scan-caption');
           if (caption) caption.textContent = 'HOLD TO SCAN';
         }
-        if (this._scanPurpose === 'pos' || this.isScannerOpen) await this.stopCameraScanner(true);
+        await this.stopPosCameraScanner();
+      },
+      async startPosCameraScanner() {
+        if (this._posScanStream || !this._posScanHoldActive) return;
+        const generation = ++this._posScanGeneration;
+        let modal = document.getElementById('pos-camera-overlay');
+        if (!modal) {
+          modal = document.createElement('div');
+          modal.id = 'pos-camera-overlay';
+          modal.innerHTML = `<div class="pos-camera-card"><div class="flex items-center justify-between gap-3 mb-3"><div><div class="text-[10px] uppercase tracking-[.18em] text-emerald-300 font-bold">POS barcode scanner</div><div id="pos-camera-status" class="text-sm font-semibold text-white mt-1">Starting camera…</div></div><span class="text-[10px] text-neutral-400">Release sphere to stop</span></div><div id="pos-camera-reader"><video id="pos-camera-video" autoplay muted playsinline></video></div><div class="text-center text-[11px] text-neutral-400 mt-3">Aim at one product barcode. A match adds one unit to this sale only.</div></div>`;
+          document.body.appendChild(modal);
+        }
+        modal.classList.remove('hidden');
+        const status = document.getElementById('pos-camera-status');
+        const video = document.getElementById('pos-camera-video');
+        try {
+          if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access requires HTTPS and a supported browser.');
+          const stream = await navigator.mediaDevices.getUserMedia({ audio:false, video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1280 }, height:{ ideal:720 } } });
+          if (generation !== this._posScanGeneration || !this._posScanHoldActive) {
+            stream.getTracks().forEach(track => track.stop());
+            return;
+          }
+          this._posScanStream = stream;
+          this._posScanVideo = video;
+          video.srcObject = stream;
+          await video.play();
+          if (generation !== this._posScanGeneration || !this._posScanHoldActive) { await this.stopPosCameraScanner(); return; }
+          this._posScanCanvas = document.createElement('canvas');
+          this._posScanCtx = this._posScanCanvas.getContext('2d', { willReadFrequently:true });
+          this._posScanDetector = null;
+          this._posScanReader = null;
+          this._posScanDecoder = 'NONE';
+          const formats = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf'];
+          if (typeof window.BarcodeDetector === 'function') {
+            try {
+              const supported = await window.BarcodeDetector.getSupportedFormats();
+              const usable = formats.filter(format => supported.includes(format));
+              if (usable.length) { this._posScanDetector = new window.BarcodeDetector({ formats:usable }); this._posScanDecoder = 'NATIVE'; }
+            } catch (_) {}
+          }
+          if (this._posScanDecoder === 'NONE' && window.ZXing?.MultiFormatReader) {
+            try {
+              const Z = window.ZXing, hints = new Map();
+              hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13,Z.BarcodeFormat.EAN_8,Z.BarcodeFormat.UPC_A,Z.BarcodeFormat.UPC_E,Z.BarcodeFormat.CODE_128,Z.BarcodeFormat.CODE_39,Z.BarcodeFormat.ITF].filter(Boolean));
+              hints.set(Z.DecodeHintType.TRY_HARDER, true);
+              this._posScanReader = new Z.MultiFormatReader();
+              this._posScanReader.setHints(hints);
+              this._posScanDecoder = 'ZXING';
+            } catch (_) {}
+          }
+          if (this._posScanDecoder === 'NONE') throw new Error('No barcode decoder is available. Check the internet connection and reload the page to load the scanner library.');
+          if (status) status.textContent = `Scanning · ${this._posScanDecoder === 'NATIVE' ? 'Browser decoder' : 'ZXing decoder'}`;
+          this._posScanLocked = false;
+          this._posScanMisses = 0;
+          this._posScanLastCode = '';
+          this._posScanLastAt = 0;
+          this._posScanLoop(generation);
+        } catch (error) {
+          if (generation !== this._posScanGeneration || !this._posScanHoldActive) return;
+          if (status) status.textContent = 'Camera unavailable';
+          this.showToast(`POS scanner: ${error?.message || 'Camera permission was denied.'}`, 'error');
+          await this.stopPosCameraScanner();
+        }
+      },
+      async _posScanLoop(generation) {
+        if (!this._posScanHoldActive || generation !== this._posScanGeneration || !this._posScanStream) return;
+        const video = this._posScanVideo;
+        if (!this._posScanBusy && video?.readyState >= 2 && video.videoWidth) {
+          this._posScanBusy = true;
+          try {
+            const canvas = this._posScanCanvas, ctx = this._posScanCtx;
+            canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            let code = '';
+            if (this._posScanDecoder === 'NATIVE' && this._posScanDetector) {
+              const detections = await this._posScanDetector.detect(canvas);
+              const hit = detections.find(item => item.rawValue && !String(item.format).toLowerCase().includes('qr'));
+              if (hit) code = String(hit.rawValue).trim();
+            } else if (this._posScanDecoder === 'ZXING' && this._posScanReader) {
+              try {
+                const Z = window.ZXing, image = ctx.getImageData(0,0,canvas.width,canvas.height), rgba = image.data;
+                const n = canvas.width * canvas.height, luminance = new Uint8ClampedArray(n);
+                for (let i=0,j=0;i<n;i++,j+=4) luminance[i] = (rgba[j]*77 + rgba[j+1]*150 + rgba[j+2]*29) >> 8;
+                const source = new Z.PlanarYUVLuminanceSource(luminance,canvas.width,canvas.height,0,0,canvas.width,canvas.height,false);
+                const result = this._posScanReader.decodeWithState(new Z.BinaryBitmap(new Z.HybridBinarizer(source)));
+                this._posScanReader.reset();
+                if (result && result.getBarcodeFormat?.() !== Z.BarcodeFormat.QR_CODE) code = String(result.getText() || '').trim();
+              } catch (_) { try { this._posScanReader?.reset(); } catch (_) {} }
+            }
+            if (generation !== this._posScanGeneration || !this._posScanHoldActive) return;
+            if (code) {
+              this._posScanMisses = 0;
+              const normalized = normalizeCodeString(code);
+              if (!this._posScanLocked || (normalized !== this._posScanLastCode && Date.now() - this._posScanLastAt > 900)) {
+                this._posScanLocked = true;
+                this._posScanLastCode = normalized;
+                this._posScanLastAt = Date.now();
+                this.handlePosScannedBarcode(code);
+              }
+            } else if (++this._posScanMisses >= 5) this._posScanLocked = false;
+          } catch (_) {
+            // A single unreadable frame is normal; keep scanning while the sphere is held.
+          } finally { this._posScanBusy = false; }
+        }
+        if (this._posScanHoldActive && generation === this._posScanGeneration) {
+          this._posScanRaf = requestAnimationFrame(() => this._posScanLoop(generation));
+        }
+      },
+      async stopPosCameraScanner() {
+        ++this._posScanGeneration;
+        this._posScanHoldActive = false;
+        if (this._posScanRaf) cancelAnimationFrame(this._posScanRaf);
+        this._posScanRaf = null;
+        if (this._posScanStream) this._posScanStream.getTracks().forEach(track => { try { track.stop(); } catch (_) {} });
+        this._posScanStream = null;
+        if (this._posScanVideo) { try { this._posScanVideo.pause(); this._posScanVideo.srcObject = null; } catch (_) {} }
+        this._posScanVideo = null;
+        this._posScanDetector = null;
+        try { this._posScanReader?.reset(); } catch (_) {}
+        this._posScanReader = null;
+        this._posScanCanvas = null; this._posScanCtx = null; this._posScanDecoder = 'NONE';
+        this._posScanBusy = false; this._posScanLocked = false; this._posScanMisses = 0;
+        const modal = document.getElementById('pos-camera-overlay');
+        if (modal) modal.classList.add('hidden');
       },
       handlePosScannedBarcode(rawBarcodeString) {
         const code = normalizeCodeString(rawBarcodeString);
