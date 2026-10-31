@@ -583,7 +583,7 @@ body {
     #uis-auth-gate input:focus { border-color: #10b981; box-shadow: 0 0 0 3px rgba(16,185,129,.15); }
     #uis-auth-gate button { width: 100%; border-radius: 10px; background: #059669; color: white; padding: 12px 14px; font-weight: 700; }
     #uis-auth-gate button:disabled { opacity: .55; cursor: not-allowed; }
-    #uis-auth-logout { position: fixed; z-index: 80; top: 12px; right: 14px; padding: 7px 11px; border: 1px solid rgba(255,255,255,.15); border-radius: 9px; background: rgba(20,20,20,.92); color: #d4d4d4; font-size: 11px; }
+    #uis-auth-logout { padding: 7px 10px; border: 1px solid rgba(255,255,255,.12); border-radius: 9px; background: rgba(20,20,20,.72); color: #d4d4d4; font-size: 11px; white-space: nowrap; }
   </style>
 
 </head>
@@ -607,7 +607,6 @@ body {
       </div>
     </form>
   </section>
-  <button id="uis-auth-logout" type="button" hidden onclick="UISAuth.logout()">Sign out</button>
 
   <a class="uis-skip-link" href="#main-content">Skip to workspace</a>
 
@@ -651,13 +650,16 @@ body {
           <div id="workspace-save-status" class="text-[10px] text-emerald-400/80" aria-live="polite">Local recovery enabled</div>
         </div>
       </div>
-      <button
-        onclick="app.toggleSidebarDrawer(false)"
-        class="p-2 rounded-full text-neutral-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
-        aria-label="Close sidebar drawer"
-      >
-        <i data-lucide="panel-left-close" class="w-5 h-5"></i>
-      </button>
+      <div class="flex items-center gap-2 shrink-0">
+        <button id="uis-auth-logout" type="button" hidden onclick="UISAuth.logout()" class="hover:bg-white/10 transition cursor-pointer" title="Sign out of UIS">Sign out</button>
+        <button
+          onclick="app.toggleSidebarDrawer(false)"
+          class="p-2 rounded-full text-neutral-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
+          aria-label="Close sidebar drawer"
+        >
+          <i data-lucide="panel-left-close" class="w-5 h-5"></i>
+        </button>
+      </div>
     </div>
 
     <!-- Drawer Scrollable Content -->
