@@ -715,6 +715,17 @@ body {
     }
     #pos-hold-scan-button:active, #pos-hold-scan-button.is-scanning { transform:translateX(-50%) scale(.94); box-shadow:0 0 0 13px rgba(56,214,176,.14),0 0 48px rgba(23,190,153,.55),inset 0 2px 8px rgba(255,255,255,.55); }
     #pos-hold-scan-button .pos-scan-caption { font-size:9px; font-weight:800; letter-spacing:.08em; }
+    #inventory-hold-scan-button {
+      position:fixed; left:50%; bottom:calc(92px + env(safe-area-inset-bottom)); transform:translateX(-50%);
+      z-index:65; width:78px; height:78px; border-radius:50%; border:1px solid rgba(184,245,229,.78);
+      color:#06231e; background:radial-gradient(circle at 32% 25%,#e1fff5 0%,#83ead1 28%,#25c6a2 66%,#087c70 100%);
+      box-shadow:0 0 0 8px rgba(56,214,176,.09),0 12px 42px rgba(23,190,153,.34),inset 0 2px 7px rgba(255,255,255,.65);
+      display:none; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+      user-select:none; -webkit-user-select:none; touch-action:none; cursor:pointer;
+    }
+    #inventory-hold-scan-button:active, #inventory-hold-scan-button.is-scanning { transform:translateX(-50%) scale(.94); box-shadow:0 0 0 13px rgba(56,214,176,.14),0 0 48px rgba(23,190,153,.55),inset 0 2px 8px rgba(255,255,255,.55); }
+    #inventory-hold-scan-button .inventory-scan-caption { font-size:9px; font-weight:800; letter-spacing:.07em; }
+    @media(max-width:640px) { #inventory-hold-scan-button { width:72px;height:72px;bottom:calc(88px + env(safe-area-inset-bottom)); } }
     #pos-camera-overlay { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; padding:16px; background:rgba(2,8,12,.88); backdrop-filter:blur(14px); }
     #pos-camera-overlay.hidden { display:none; }
     #pos-camera-overlay .pos-camera-card { width:min(100%,560px); border:1px solid rgba(56,214,176,.28); border-radius:24px; padding:14px; background:#0d1921; box-shadow:0 24px 90px rgba(0,0,0,.6); }
@@ -989,18 +1000,12 @@ body {
 
       <!-- Idle Hero Orb (Shown when camera is closed and no item is currently displayed) -->
       <div id="scanner-idle-hero" class="my-auto py-10 flex flex-col items-center text-center space-y-5">
-        <button
-          onclick="app.toggleCameraScanner()"
-          class="group relative w-24 h-24 rounded-full bg-gradient-to-b from-white to-neutral-300 text-black flex items-center justify-center shadow-[0_0_50px_rgba(255,255,255,0.14)] hover:scale-105 active:scale-95 transition duration-200 cursor-pointer"
-        >
-          <i data-lucide="scan-barcode" class="w-10 h-10 transition-transform group-hover:scale-110"></i>
-        </button>
         <div class="space-y-1.5 max-w-md">
           <h2 class="text-xl sm:text-2xl font-semibold tracking-tight text-white">
             Ready to scan inventory
           </h2>
           <p class="text-xs sm:text-sm text-neutral-400 leading-relaxed">
-            Tap the orb to launch the rear camera or enter a barcode below. Searches both <span class="text-neutral-200 font-mono">BARCODE</span> and <span class="text-neutral-200 font-mono">CODE</span>—the field matching the most digits wins.
+            Press and hold the floating orb to scan. Release it to stop and close the camera. You can also enter a barcode below. Searches both <span class="text-neutral-200 font-mono">BARCODE</span> and <span class="text-neutral-200 font-mono">CODE</span>—the field matching the most digits wins.
           </p>
         </div>
 
@@ -2954,6 +2959,7 @@ body {
       _scanNativeDetector: null, _scanZXingReader: null, _scanDecoder: 'NONE',
       _scanActive: false, _scanRaf: null, _scanRoi: null, _scanLocked: false, _scanMisses: 0, _scanLastCode: '', _scanLastAt: 0, _scanLastFrameAt: 0,
       _scanPurpose: 'inventory', _scanHoldActive: false, _scanHostId: 'fflz-barcode-reader', _scanOverlayId: 'fflz-scan-overlay',
+      _inventoryHoldActive: false, _inventoryHoldPointerId: null, _inventoryHoldListenersReady: false, _inventoryHoldGeneration: 0,
       // POS scanner is deliberately isolated from the Main Inventory scanner state.
       _posScanHoldActive: false, _posScanStream: null, _posScanVideo: null, _posScanDetector: null, _posScanReader: null, _posScanDecoder: 'NONE', _posScanCanvas: null, _posScanCtx: null, _posScanRaf: null, _posScanGeneration: 0, _posScanBusy: false, _posScanLocked: false, _posScanMisses: 0, _posScanLastCode: '', _posScanLastAt: 0, _posHoldPointerId: null, _posHoldListenersReady: false,
       lastScannedCode: { code: '', time: 0 },
@@ -4016,6 +4022,64 @@ body {
         const countNode = controls.querySelector('#pos-header-cart-count');
         if (countNode) countNode.textContent = String(count);
         if (window.lucide?.createIcons) lucide.createIcons();
+      },
+      syncMainInventoryHoldScanButton() {
+        let button = document.getElementById('inventory-hold-scan-button');
+        if (!button) {
+          button = document.createElement('button');
+          button.id = 'inventory-hold-scan-button'; button.type = 'button';
+          button.setAttribute('aria-label', 'Press and hold to scan inventory barcode; release to stop');
+          button.innerHTML = '<i data-lucide="scan-barcode" class="w-6 h-6"></i><span class="inventory-scan-caption">HOLD TO SCAN</span>';
+          button.addEventListener('pointerdown', event => {
+            if (event.button != null && event.button !== 0) return;
+            event.preventDefault();
+            this._inventoryHoldPointerId = event.pointerId;
+            this.beginMainInventoryHoldScan(event);
+          });
+          button.addEventListener('contextmenu', event => event.preventDefault());
+          if (!this._inventoryHoldListenersReady) {
+            document.addEventListener('pointerup', event => {
+              if (this._inventoryHoldPointerId != null && event.pointerId === this._inventoryHoldPointerId) this.endMainInventoryHoldScan();
+            }, true);
+            document.addEventListener('pointercancel', event => {
+              if (this._inventoryHoldPointerId != null && event.pointerId === this._inventoryHoldPointerId) this.endMainInventoryHoldScan();
+            }, true);
+            window.addEventListener('blur', () => this.endMainInventoryHoldScan());
+            document.addEventListener('visibilitychange', () => { if (document.hidden) this.endMainInventoryHoldScan(); });
+            this._inventoryHoldListenersReady = true;
+          }
+          document.body.appendChild(button);
+        }
+        const visible = this.activeView === 'scanner' && !!this.workbook;
+        button.style.display = visible ? 'flex' : 'none';
+        if (!visible && this._inventoryHoldActive) this.endMainInventoryHoldScan();
+        if (window.lucide?.createIcons) lucide.createIcons();
+      },
+      async beginMainInventoryHoldScan(event) {
+        if (this.activeView !== 'scanner' || !this.workbook || this._inventoryHoldActive) return;
+        event?.preventDefault?.();
+        this._inventoryHoldActive = true;
+        const generation = ++this._inventoryHoldGeneration;
+        const button = document.getElementById('inventory-hold-scan-button');
+        if (button) {
+          button.classList.add('is-scanning');
+          const caption = button.querySelector('.inventory-scan-caption');
+          if (caption) caption.textContent = 'SCANNING · RELEASE TO STOP';
+        }
+        await this.startCameraScanner('inventory', generation);
+      },
+      async endMainInventoryHoldScan() {
+        if (!this._inventoryHoldActive && !this._scanStream && !this._scanRaf) return;
+        this._inventoryHoldActive = false;
+        this._inventoryHoldPointerId = null;
+        ++this._inventoryHoldGeneration;
+        const button = document.getElementById('inventory-hold-scan-button');
+        if (button) {
+          button.classList.remove('is-scanning');
+          const caption = button.querySelector('.inventory-scan-caption');
+          if (caption) caption.textContent = 'HOLD TO SCAN';
+        }
+        if (this._scanPurpose === 'inventory' && this.isScannerOpen) await this.stopCameraScanner();
       },
       syncPosHoldScanButton() {
         this.syncPosHeaderControls();
@@ -5359,10 +5423,11 @@ handleSetScannedItemQty(rawAddedQty) {
         else await this.startCameraScanner();
       },
 
-      async startCameraScanner(purpose = 'inventory') {
+      async startCameraScanner(purpose = 'inventory', inventoryHoldGeneration = null) {
         if (this.isScannerOpen) return;
         this._scanPurpose = purpose === 'pos' ? 'pos' : 'inventory';
         const requestedPurpose = this._scanPurpose;
+        const isInventoryHoldStart = requestedPurpose === 'inventory' && inventoryHoldGeneration != null;
         this._scanHostId = this._scanPurpose === 'pos' ? 'pos-camera-reader' : 'fflz-barcode-reader';
         this._scanOverlayId = this._scanPurpose === 'pos' ? 'pos-camera-scan-overlay' : 'fflz-scan-overlay';
         if (this._scanPurpose === 'inventory') this.activeView = 'scanner';
@@ -5413,6 +5478,12 @@ handleSetScannedItemQty(rawAddedQty) {
             audio: false,
             video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
           });
+          if (isInventoryHoldStart && (!this._inventoryHoldActive || inventoryHoldGeneration !== this._inventoryHoldGeneration)) {
+            requestedStream.getTracks().forEach(track => { try { track.stop(); } catch (_) {} });
+            this.isScannerOpen = false;
+            const stalePanel = document.getElementById('camera-scanner-panel'); if (stalePanel) stalePanel.classList.add('hidden');
+            return;
+          }
           if (requestedPurpose === 'pos' && !this._scanHoldActive) {
             requestedStream.getTracks().forEach(track => { try { track.stop(); } catch (_) {} });
             this.isScannerOpen = false;
@@ -5422,6 +5493,10 @@ handleSetScannedItemQty(rawAddedQty) {
           this._scanStream = requestedStream;
           video.srcObject = this._scanStream;
           await video.play();
+          if (isInventoryHoldStart && (!this._inventoryHoldActive || inventoryHoldGeneration !== this._inventoryHoldGeneration)) {
+            await this.stopCameraScanner(false);
+            return;
+          }
           this._scanVideo = video;
           this._scanCanvas = document.createElement('canvas');
           this._scanCtx = this._scanCanvas.getContext('2d', { willReadFrequently: true });
@@ -5451,6 +5526,8 @@ handleSetScannedItemQty(rawAddedQty) {
             } catch (_) {}
           }
           if (this._scanDecoder === 'NONE') throw new Error('No supported barcode decoder found. Open this page in a browser with BarcodeDetector support or allow the ZXing library to load.');
+          if (isInventoryHoldStart && (!this._inventoryHoldActive || inventoryHoldGeneration !== this._inventoryHoldGeneration)) { await this.stopCameraScanner(false); return; }
+          if (!this._scanStream) { await this.stopCameraScanner(false); return; }
           if (badge) badge.textContent = `${this._scanDecoder === 'NATIVE' ? 'Native BarcodeDetector' : 'ZXing fallback'} • Adaptive ROI • QR disabled`;
           const track = this._scanStream.getVideoTracks()[0];
           try { const caps = track.getCapabilities?.(); this.torchSupported = !!caps?.torch; if (caps?.focusMode?.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (_) { this.torchSupported = false; }
@@ -5461,6 +5538,10 @@ handleSetScannedItemQty(rawAddedQty) {
           this._scanLastFrameAt = 0;
           this._scanLoop();
         } catch (err) {
+          if (isInventoryHoldStart && (!this._inventoryHoldActive || inventoryHoldGeneration !== this._inventoryHoldGeneration)) {
+            await this.stopCameraScanner(false);
+            return;
+          }
           this.scannerStatus = 'CAMERA_ERROR';
           this.renderScannerBar();
           this.showToast(requestedPurpose === 'pos'
@@ -5559,6 +5640,12 @@ handleSetScannedItemQty(rawAddedQty) {
         try { this._scanZXingReader?.reset(); } catch (_) {}
         this._scanZXingReader = null; this._scanDecoder = 'NONE';
         this.torchSupported = false; this.torchOn = false; this.isScannerOpen = false;
+        if (this._scanPurpose === 'inventory') {
+          this._inventoryHoldActive = false;
+          this._inventoryHoldPointerId = null;
+          const inventoryButton = document.getElementById('inventory-hold-scan-button');
+          if (inventoryButton) { inventoryButton.classList.remove('is-scanning'); const caption = inventoryButton.querySelector('.inventory-scan-caption'); if (caption) caption.textContent = 'HOLD TO SCAN'; }
+        }
         if (this.scannerStatus === 'SCANNING') this.scannerStatus = 'READY';
         const wasPosScanner = this._scanPurpose === 'pos';
         if (wasPosScanner) {
@@ -6038,6 +6125,7 @@ handleSetScannedItemQty(rawAddedQty) {
         this.renderSidebar();
         this.renderMainView();
         this.syncPosHoldScanButton();
+        this.syncMainInventoryHoldScanButton();
         this.renderDisambiguationModal();
         lucide.createIcons();
         this.scheduleWorkspaceSave();
