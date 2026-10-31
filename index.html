@@ -616,8 +616,11 @@ body {
       min-width: 1633px !important;
       table-layout: auto;
     }
+    /* Compact line spacing consistently across every Activity Log column. */
     #activity-log-table th,
-    #activity-log-table td { line-height: 42px !important; }
+    #activity-log-table td,
+    #activity-log-table th *,
+    #activity-log-table td * { line-height: 10px !important; }
     #activity-log-table-wrap { width: 100%; max-width: none; border-left: 0 !important; border-right: 0 !important; border-radius: 0 !important; }
 
     /* Clean, unified application header. Keep one menu trigger and one active-view label. */
