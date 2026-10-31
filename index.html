@@ -811,8 +811,9 @@ body {
     </div>
   </div>
 
-  <!-- Hidden File Input -->
+  <!-- Hidden file inputs: individual Excel workbooks and ZIP bundles of workbooks. -->
   <input id="file-upload-input" type="file" multiple accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12" class="hidden" />
+  <input id="zip-upload-input" type="file" accept=".zip,application/zip,application/x-zip-compressed" class="hidden" />
 
   <!-- ====================================================================== -->
   <!-- SLIDE-OVER SIDEBAR DRAWER (CHATGPT MOBILE 2026 OFF-CANVAS MENU) -->
@@ -913,8 +914,12 @@ body {
 
     <div class="header-actions" aria-label="Workbook actions">
       <button type="button" onclick="document.getElementById('file-upload-input').click()"
-        class="header-action header-action-import" title="Import Excel Workbook (.xlsx)" aria-label="Import Excel workbook">
+        class="header-action header-action-import" title="Import Excel Workbook (.xlsx/.xlsm)" aria-label="Import Excel workbooks">
         <i data-lucide="upload" class="w-4 h-4"></i><span class="header-action-label">Import</span>
+      </button>
+      <button type="button" onclick="document.getElementById('zip-upload-input').click()"
+        class="header-action" title="Import Excel workbooks from a ZIP file" aria-label="Import ZIP file">
+        <i data-lucide="file-archive" class="w-4 h-4"></i><span class="header-action-label">ZIP</span>
       </button>
       <button type="button" id="btn-toggle-scanner" onclick="app.toggleCameraScanner()"
         class="header-action header-action-scan" title="Toggle Live Camera Barcode Scanner" aria-label="Toggle barcode scanner">
@@ -1034,6 +1039,14 @@ body {
           >
             <i data-lucide="file-up" class="w-4 h-4"></i>
             <span>Import Excel Workbook (.xlsx)</span>
+          </button>
+          <button
+            type="button"
+            onclick="document.getElementById('zip-upload-input').click()"
+            class="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-xs sm:text-sm font-semibold bg-[#1f1f1f] hover:bg-[#2a2a2a] text-white border border-white/15 transition cursor-pointer"
+          >
+            <i data-lucide="file-archive" class="w-4 h-4 text-emerald-400"></i>
+            <span>Import ZIP of Workbooks</span>
           </button>
           <button
             type="button"
@@ -3020,9 +3033,9 @@ body {
       async init() {
         this.applyTheme(this.loadTheme());
         const fileInput = document.getElementById('file-upload-input');
-        if (fileInput) {
-          fileInput.addEventListener('change', (e) => this.handleFileUpload(e));
-        }
+        if (fileInput) fileInput.addEventListener('change', (e) => this.handleFileUpload(e));
+        const zipInput = document.getElementById('zip-upload-input');
+        if (zipInput) zipInput.addEventListener('change', (e) => this.handleZipUpload(e));
         this.installGlobalUXHandlers();
         this.workbook = null;
         this.openWorkbooks = [];
@@ -4845,9 +4858,84 @@ body {
         if (e.target) e.target.value = '';
         if (!files.length) return;
         // Import sequentially so the browser does not need to parse every
-        // selected workbook at once. There is no fixed open-workbook count cap;
-        // practical limits are the device's available memory and browser storage.
+        // selected workbook at once. There is no fixed open-workbook count cap.
         for (const file of files) await this.handleSingleWorkbookUpload(file);
+      },
+
+      async handleZipUpload(e) {
+        const zipFile = e?.target?.files?.[0];
+        if (e?.target) e.target.value = '';
+        if (!zipFile) return;
+        if (!window.JSZip) {
+          this.showErrorBanner('ZIP import is unavailable because the archive library did not load. Check your internet connection and reload UIS.');
+          return;
+        }
+        // Resource safeguards are based on bytes, not workbook count. Each
+        // extracted workbook still passes through the normal 50 MB validation.
+        const MAX_ZIP_BYTES = 250 * 1024 * 1024;
+        const MAX_TOTAL_EXTRACTED_BYTES = 1024 * 1024 * 1024;
+        if (zipFile.size > MAX_ZIP_BYTES) {
+          this.showErrorBanner('This ZIP archive is larger than 250 MB. Split it into smaller ZIP files and import them one at a time.');
+          return;
+        }
+        this.clearErrorBanner();
+        let archive;
+        try {
+          this.showToast('Opening ZIP archive…', 'success');
+          archive = await window.JSZip.loadAsync(zipFile, { checkCRC32: true, createFolders: false });
+        } catch (error) {
+          this.showErrorBanner(`Could not open ZIP archive: ${error?.message || 'The archive may be damaged or password-protected.'}`);
+          return;
+        }
+        const entries = Object.values(archive.files || {})
+          .filter(entry => entry && !entry.dir && /\.(xlsx|xlsm)$/i.test(entry.name) && !entry.name.split('/').some(part => part.startsWith('__MACOSX')))
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+        if (!entries.length) {
+          this.showErrorBanner('No .xlsx or .xlsm workbooks were found inside this ZIP. Other file types are not imported as inventory workbooks.');
+          return;
+        }
+        let knownTotal = 0;
+        for (const entry of entries) {
+          const size = Number(entry?._data?.uncompressedSize);
+          if (Number.isFinite(size) && size > 0) knownTotal += size;
+        }
+        if (knownTotal > MAX_TOTAL_EXTRACTED_BYTES) {
+          this.showErrorBanner('The ZIP contains more than 1 GB of uncompressed Excel data. Split it into smaller ZIP files to avoid exhausting phone memory.');
+          return;
+        }
+        let imported = 0, failed = 0, skippedLarge = 0, extractedBytes = 0;
+        const startCount = this.openWorkbooks?.length || 0;
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
+          const expectedSize = Number(entry?._data?.uncompressedSize) || 0;
+          if (expectedSize > 50 * 1024 * 1024) {
+            skippedLarge++;
+            continue;
+          }
+          try {
+            this.showToast(`Extracting workbook ${i + 1} of ${entries.length}: ${entry.name.split('/').pop()}`, 'success');
+            const buffer = await entry.async('arraybuffer');
+            extractedBytes += buffer.byteLength;
+            if (buffer.byteLength > 50 * 1024 * 1024) { skippedLarge++; continue; }
+            if (extractedBytes > MAX_TOTAL_EXTRACTED_BYTES) {
+              this.showErrorBanner('ZIP extraction stopped after reaching the 1 GB safety limit. Import the remaining workbooks from another ZIP.');
+              break;
+            }
+            const cleanName = entry.name.split('/').pop();
+            const workbookFile = new File([buffer], cleanName, { type: cleanName.toLowerCase().endsWith('.xlsm') ? 'application/vnd.ms-excel.sheet.macroEnabled.12' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', lastModified: zipFile.lastModified || Date.now() });
+            const before = this.openWorkbooks?.length || 0;
+            await this.handleSingleWorkbookUpload(workbookFile);
+            if ((this.openWorkbooks?.length || 0) > before) imported++;
+            else failed++;
+          } catch (error) {
+            failed++;
+            this.showToast(`Skipped ${entry.name.split('/').pop()}: ${error?.message || 'could not import workbook'}`, 'error');
+          }
+        }
+        const added = (this.openWorkbooks?.length || 0) - startCount;
+        const summary = `ZIP import finished: ${Math.max(imported, added)} imported, ${failed} not imported, ${skippedLarge} over 50 MB skipped.`;
+        if (imported || added) this.showToast(summary, failed || skippedLarge ? 'error' : 'success');
+        else this.showErrorBanner(summary + ' Check the workbook setup prompts and file formats.');
       },
 
       async handleSingleWorkbookUpload(file) {
@@ -6220,7 +6308,7 @@ handleSetScannedItemQty(rawAddedQty) {
           const edited = wb?.worksheets?.reduce((sum, ws) => sum + (ws.records || []).filter(r => r.isModified || r.isFullUpcModified || r.isNewRow).length, 0) || 0;
           const name = String(wb?.filename || `Workbook ${idx + 1}`);
           return `<button type="button" class="workbook-tab ${active ? 'active' : ''}" onclick="app.switchWorkbookTab(${idx})" title="${escapeHtml(name)}" aria-current="${active ? 'page' : 'false'}"><i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 shrink-0"></i><span class="tab-name">${escapeHtml(name)}</span>${edited ? `<span class="tab-edited">${edited} edited</span>` : ''}</button>`;
-        }).join('') + `<button type="button" class="workbook-tab-add" onclick="document.getElementById('file-upload-input').click()"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Add files</button>`;
+        }).join('') + `<button type="button" class="workbook-tab-add" onclick="document.getElementById('file-upload-input').click()"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Add files</button><button type="button" class="workbook-tab-add" onclick="document.getElementById('zip-upload-input').click()"><i data-lucide="file-archive" class="w-3.5 h-3.5"></i> Import ZIP</button>`;
         if (window.lucide) lucide.createIcons();
       },
 
