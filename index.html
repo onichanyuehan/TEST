@@ -694,7 +694,7 @@ body {
           <div class="text-[11px] text-neutral-400 font-mono truncate" id="header-ref-filename">
             John Genanda
           </div>
-          <div id="workspace-save-status" class="text-[10px] text-emerald-400/80" aria-live="polite">Local recovery enabled</div>
+          <div id="workspace-save-status" class="text-[10px] text-emerald-400/80" aria-live="polite">Waiting for workbook · local recovery not yet verified</div>
         </div>
       </div>
       <div class="flex items-center gap-2 shrink-0">
@@ -2659,7 +2659,7 @@ body {
         if (this._workspaceDbPromise) return this._workspaceDbPromise;
         this._workspaceDbPromise = new Promise((resolve, reject) => {
           if (!('indexedDB' in window)) { reject(new Error('IndexedDB is unavailable')); return; }
-          const request = indexedDB.open('UIS_LocalWorkspace', 1);
+          const request = indexedDB.open('UIS_LocalWorkspace', 2);
           request.onupgradeneeded = () => {
             const db = request.result;
             if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', { keyPath: 'id' });
@@ -2675,11 +2675,19 @@ body {
         return this._workspaceDbPromise;
       },
 
-      flushWorkspaceSave() {
+      async flushWorkspaceSave() {
         clearTimeout(this._workspaceSaveTimer);
         this._workspaceSaveTimer = null;
-        if (!this.workbook?.originalBuffer) return Promise.resolve();
-        return this.persistWorkspaceSnapshot();
+        if (!this.workbook?.originalBuffer) return false;
+        // If a save is already running, its internal queue will include the
+        // newest revision. Await it, then confirm no newer revision is pending.
+        let result = await this.persistWorkspaceSnapshot();
+        while (this._workspaceDirty || this._workspaceSaveQueued || this._workspaceSaveTimer) {
+          clearTimeout(this._workspaceSaveTimer);
+          this._workspaceSaveTimer = null;
+          result = await this.persistWorkspaceSnapshot();
+        }
+        return result === true;
       },
 
       scheduleWorkspaceSave() {
@@ -2697,10 +2705,10 @@ body {
       },
 
       async persistWorkspaceSnapshot() {
-        if (!this.workbook?.originalBuffer) return;
+        if (!this.workbook?.originalBuffer) return false;
         if (this._workspaceSaveInFlight) {
           this._workspaceSaveQueued = true;
-          return this._workspaceSavePromise || undefined;
+          return this._workspaceSavePromise || false;
         }
         this._workspaceSaveInFlight = true;
         const saveLoop = async () => {
@@ -2712,7 +2720,7 @@ body {
               const status = document.getElementById('workspace-save-status');
               if (status) status.textContent = 'Saving locally…';
               const snapshot = {
-                id: 'latest', schemaVersion: 4, savedAt: Date.now(), filename: this.workbook.filename || 'workbook.xlsx',
+                id: 'latest', schemaVersion: 5, savedAt: Date.now(), filename: this.workbook.filename || 'workbook.xlsx',
                 workbook: this.workbook, auditLogs: this.auditLogs || [], activityLogs: this.activityLogs || [], sales: this.sales || [],
                 headerRowOverrides: this.headerRowOverrides || {}, activeSheetIdx: this.activeSheetIdx || 0,
                 activeView: this.activeView || 'scanner', pendingExportChanges: !!this._pendingExportChanges,
@@ -2723,20 +2731,44 @@ body {
                 posCashReceived: String(this.posCashReceived || ''),
                 posSearchQuery: String(this.posSearchQuery || '')
               };
+              // Move the last known-good snapshot to `previous` and write the new
+              // snapshot in one transaction. If the new write fails, `latest`
+              // remains untouched and the older recovery point is preserved.
               await new Promise((resolve, reject) => {
                 let tx;
                 try { tx = db.transaction('snapshots', 'readwrite', { durability: 'strict' }); }
                 catch (_) { tx = db.transaction('snapshots', 'readwrite'); }
-                tx.objectStore('snapshots').put(snapshot);
+                const store = tx.objectStore('snapshots');
+                const getLatest = store.get('latest');
+                getLatest.onsuccess = () => {
+                  const prior = getLatest.result;
+                  if (prior && prior.workbook?.originalBuffer && Array.isArray(prior.workbook.worksheets)) {
+                    store.put({ ...prior, id: 'previous' });
+                  }
+                  store.put(snapshot);
+                };
+                getLatest.onerror = () => { try { tx.abort(); } catch (_) {} };
                 tx.oncomplete = resolve;
                 tx.onerror = () => reject(tx.error || new Error('Could not save local recovery snapshot'));
                 tx.onabort = () => reject(tx.error || new Error('Local recovery save was interrupted'));
               });
+              // Verify the committed record by reading it back. Never show
+              // “Saved locally” merely because a write request was attempted.
+              const verified = await new Promise((resolve, reject) => {
+                const tx = db.transaction('snapshots', 'readonly');
+                const request = tx.objectStore('snapshots').get('latest');
+                request.onsuccess = () => resolve(request.result || null);
+                request.onerror = () => reject(request.error || new Error('Could not verify local recovery snapshot'));
+              });
+              if (!verified || verified.schemaVersion !== 5 || !verified.workbook?.originalBuffer ||
+                  !Array.isArray(verified.workbook.worksheets) || verified.savedAt !== snapshot.savedAt) {
+                throw new Error('Local recovery write could not be verified. Your latest changes are not confirmed saved.');
+              }
               this._workspaceLastSavedAt = snapshot.savedAt;
               this._workspaceSaveError = null;
               if (revisionAtStart === (this._workspaceSaveRevision || 0) && !this._workspaceSaveQueued) {
                 this._workspaceDirty = false;
-                if (status) status.textContent = 'Saved locally';
+                if (status) status.textContent = `Saved locally · ${new Date(snapshot.savedAt).toLocaleTimeString()}`;
               } else if (status) {
                 status.textContent = 'Saving latest changes…';
                 this._workspaceSaveQueued = true;
@@ -2746,12 +2778,14 @@ body {
                 if (estimate?.quota && estimate.usage / estimate.quota > 0.9 && status) status.textContent = 'Browser storage nearly full';
               }
             } while (this._workspaceSaveQueued);
+            return true;
           } catch (err) {
-            console.warn('UIS local recovery save failed:', err);
+            console.error('UIS local recovery save failed:', err);
             this._workspaceSaveError = err;
             this._workspaceDirty = true;
             const status = document.getElementById('workspace-save-status');
-            if (status) status.textContent = 'Local save failed. Keep this page open and check browser storage.';
+            if (status) status.textContent = `SAVE FAILED: ${err.message}`;
+            throw err;
           } finally {
             this._workspaceSaveInFlight = false;
             this._workspaceSavePromise = null;
@@ -2766,18 +2800,29 @@ body {
       },
 
       async restoreWorkspaceIfAvailable() {
+        const isValidSnapshot = snapshot => !!(
+          snapshot?.workbook?.originalBuffer && Array.isArray(snapshot.workbook.worksheets) &&
+          snapshot.workbook.worksheets.length > 0 && snapshot.workbook.worksheets.length <= 500 &&
+          snapshot.workbook.worksheets.every(ws => ws && typeof ws.sheetName === 'string' && Array.isArray(ws.headers) && Array.isArray(ws.records))
+        );
         try {
           const db = await this.openWorkspaceDatabase();
-          const snapshot = await new Promise((resolve, reject) => {
+          const candidates = await new Promise((resolve, reject) => {
             const tx = db.transaction('snapshots', 'readonly');
-            const request = tx.objectStore('snapshots').get('latest');
-            request.onsuccess = () => resolve(request.result || null);
-            request.onerror = () => reject(request.error || new Error('Could not read recovery snapshot'));
+            const store = tx.objectStore('snapshots');
+            const latestReq = store.get('latest');
+            const previousReq = store.get('previous');
+            let latest, previous, completed = 0;
+            const done = () => { completed++; if (completed === 2) resolve([latest, previous]); };
+            latestReq.onsuccess = () => { latest = latestReq.result || null; done(); };
+            previousReq.onsuccess = () => { previous = previousReq.result || null; done(); };
+            latestReq.onerror = previousReq.onerror = () => reject(tx.error || new Error('Could not read recovery snapshots'));
           });
-          if (!snapshot?.workbook?.originalBuffer || !Array.isArray(snapshot.workbook.worksheets) ||
-              !snapshot.workbook.worksheets.length || snapshot.workbook.worksheets.length > 500 ||
-              snapshot.workbook.worksheets.some(ws => !ws || typeof ws.sheetName !== 'string' || !Array.isArray(ws.headers) || !Array.isArray(ws.records))) {
-            if (snapshot) console.warn('UIS recovery snapshot failed structural validation and was not restored.');
+          const snapshot = isValidSnapshot(candidates[0]) ? candidates[0] : isValidSnapshot(candidates[1]) ? candidates[1] : null;
+          if (!snapshot) {
+            const status = document.getElementById('workspace-save-status');
+            if (status) status.textContent = 'No saved workbook found for this site and browser profile';
+            if (candidates.some(Boolean)) console.warn('UIS recovery snapshots failed structural validation.');
             return;
           }
           this.workbook = snapshot.workbook;
@@ -2791,6 +2836,7 @@ body {
           this.posSearchQuery = String(snapshot.posSearchQuery || '');
           this._workspaceDirty = false;
           this._workspaceSaveError = null;
+          this._workspaceLastSavedAt = Number(snapshot.savedAt) || 0;
           this._pendingExportChanges = snapshot.pendingExportChanges === true || (snapshot.pendingExportChanges === undefined && this.workbook.worksheets.some(ws => ws.records.some(r => r.isModified || r.isFullUpcModified || r.isNewRow) || ws.fflzHeaderRenamed));
           this._lastWorkbookExportAt = Number(snapshot.lastWorkbookExportAt) || 0;
           this.headerRowOverrides = snapshot.headerRowOverrides || {};
@@ -2799,10 +2845,17 @@ body {
           this._gridSearchIndexedWorkbook = null; this._gridSearchCache = null; this._gridSearchMatchedRows = null;
           this.rebuildIndex();
           this.renderAll();
+          const status = document.getElementById('workspace-save-status');
+          if (status) status.textContent = `Recovered locally · ${new Date(snapshot.savedAt || Date.now()).toLocaleTimeString()}${snapshot.id === 'previous' ? ' · previous recovery copy' : ''}`;
           const when = new Date(snapshot.savedAt || Date.now()).toLocaleString();
           this.showToast(`Recovered "${snapshot.filename || this.workbook.filename}" from this browser (${when}).`);
+          // If recovery used the fallback copy, write it back as latest before
+          // accepting new edits so the next save starts from a valid state.
+          if (snapshot.id === 'previous') this.scheduleWorkspaceSave();
         } catch (err) {
-          console.warn('UIS local recovery restore skipped:', err);
+          console.error('UIS local recovery restore failed:', err);
+          const status = document.getElementById('workspace-save-status');
+          if (status) status.textContent = `RECOVERY FAILED: ${err.message}`;
         }
       },
 
@@ -4049,8 +4102,9 @@ body {
           this.rebuildIndex();
           this.recordActivity('WORKBOOK_IMPORTED', { details: `Imported ${file.name}: ${importValidation.sheetCount} worksheets and ${importValidation.totalRecords.toLocaleString()} records. ${importValidation.warnings.length ? 'Warnings: ' + importValidation.warnings.join('; ') : 'No import warnings.'}` }, { category: 'system', affectsWorkbook: false });
           this.renderAll();
-          await this.flushWorkspaceSave();
-          this.showToast(`Imported "${file.name}" and saved a local recovery copy.`);
+          const saved = await this.flushWorkspaceSave();
+          if (!saved || this._workspaceSaveError) throw this._workspaceSaveError || new Error('Local recovery could not be verified. Download a JSON backup before leaving this page.');
+          this.showToast(`Imported "${file.name}" and verified the local recovery copy.`);
         } catch (err) {
           this.showErrorBanner(`Workbook Inspection Error: ${err.message}`);
         }
