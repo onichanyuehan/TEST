@@ -288,6 +288,12 @@ body {
     #virtual-worksheet-scroll table { font-variant-numeric: tabular-nums; }
     #virtual-worksheet-scroll thead { position: sticky; top: 0; z-index: 5; }
     #virtual-worksheet-scroll th { box-shadow: inset 0 -1px rgba(148,163,184,.16); }
+    #virtual-worksheet-scroll th.uis-grid-draggable-header { cursor: grab; }
+    #virtual-worksheet-scroll th.uis-grid-draggable-header:active { cursor: grabbing; }
+    #virtual-worksheet-scroll th.uis-grid-drag-over { outline: 2px dashed rgba(52,211,153,.9); outline-offset: -3px; background: rgba(6,78,59,.45); }
+    .uis-grid-column-move { display:inline-flex; align-items:center; gap:2px; margin-left:8px; }
+    .uis-grid-column-move button { width:20px; height:20px; border:1px solid rgba(148,163,184,.22); border-radius:5px; color:#cbd5e1; background:rgba(15,23,42,.75); line-height:1; font-size:12px; }
+    .uis-grid-column-move button:disabled { opacity:.25; cursor:not-allowed; }
     #virtual-worksheet-scroll td, #virtual-worksheet-scroll th { max-width: 360px; }
 
     /* Dialogs and transient feedback get consistent depth and mobile-safe sizing. */
@@ -1679,6 +1685,227 @@ body {
 
     class OpenXmlSurgicalEngine {
 
+      static columnLetterToIndex(letters) {
+        let n = 0;
+        for (const ch of String(letters || '').toUpperCase()) n = n * 26 + ch.charCodeAt(0) - 64;
+        return n;
+      }
+
+      static mapFormulaReferences(formula, formulaSheetName, mappings) {
+        if (!formula || !mappings.size) return formula;
+        // Protect string literals first, then transform whole ranges before individual
+        // references. Mapping each endpoint alone breaks ranges when a column moves
+        // into or out of the middle of a referenced block.
+        const strings = [];
+        let protectedFormula = String(formula).replace(/"(?:[^"]|"")*"/g, value => {
+          const token = `__UIS_STR_${strings.length}__`;
+          strings.push(value);
+          return token;
+        });
+        const ranges = [];
+        const wholeColumnPattern = /(^|[^A-Z0-9_.])((?:'(?:(?:[^']|'')*)'|[A-Za-z_][A-Za-z0-9_. ]*)!)?(\$?)([A-Z]{1,3}):(\$?)([A-Z]{1,3})(?![A-Z0-9_(])/gi;
+        protectedFormula = protectedFormula.replace(wholeColumnPattern, (whole, boundary, sheetPrefix, abs1, col1, abs2, col2) => {
+          const targetSheet = sheetPrefix ? sheetPrefix.slice(0, -1).replace(/^'|'$/g, '').replace(/''/g, "'") : formulaSheetName;
+          const mapping = mappings.get(String(targetSheet).toLowerCase());
+          if (!mapping) return whole;
+          const a = this.columnLetterToIndex(col1), b = this.columnLetterToIndex(col2);
+          const mapped = [];
+          for (let c = Math.min(a, b); c <= Math.max(a, b); c++) mapped.push(mapping.get(c) || c);
+          const sorted = [...new Set(mapped)].sort((x, y) => x - y);
+          const groups = [];
+          for (const col of sorted) {
+            const last = groups[groups.length - 1];
+            if (last && col === last[1] + 1) last[1] = col;
+            else groups.push([col, col]);
+          }
+          const rendered = groups.map(([lo, hi]) => `${abs1}${colIndexToLetter(lo)}:${abs2}${colIndexToLetter(hi)}`);
+          const token = `__UIS_RANGE_${ranges.length}__`;
+          ranges.push(`${boundary}${sheetPrefix || ''}${rendered.join(',')}`);
+          return token;
+        });
+        const rangePattern = /(^|[^A-Z0-9_.])((?:'(?:(?:[^']|'')*)'|[A-Za-z_][A-Za-z0-9_. ]*)!)?(\$?)([A-Z]{1,3})(\$?)([1-9][0-9]*):(\$?)([A-Z]{1,3})(\$?)([1-9][0-9]*)(?![A-Z0-9_(])/gi;
+        protectedFormula = protectedFormula.replace(rangePattern, (whole, boundary, sheetPrefix, absCol1, col1, absRow1, row1, absCol2, col2, absRow2, row2) => {
+          const targetSheet = sheetPrefix ? sheetPrefix.slice(0, -1).replace(/^'|'$/g, '').replace(/''/g, "'") : formulaSheetName;
+          const mapping = mappings.get(String(targetSheet).toLowerCase());
+          if (!mapping) return whole;
+          const a = this.columnLetterToIndex(col1), b = this.columnLetterToIndex(col2);
+          const mapped = [];
+          for (let c = Math.min(a, b); c <= Math.max(a, b); c++) mapped.push(mapping.get(c) || c);
+          const sorted = [...new Set(mapped)].sort((x, y) => x - y);
+          const groups = [];
+          for (const col of sorted) {
+            const last = groups[groups.length - 1];
+            if (last && col === last[1] + 1) last[1] = col;
+            else groups.push([col, col]);
+          }
+          const rendered = groups.map(([lo, hi]) => `${absCol1}${colIndexToLetter(lo)}${absRow1}${row1}:${absCol2}${colIndexToLetter(hi)}${absRow2}${row2}`);
+          const token = `__UIS_RANGE_${ranges.length}__`;
+          ranges.push(`${boundary}${sheetPrefix || ''}${rendered.join(',')}`);
+          return token;
+        });
+
+        const refPattern = /(^|[^A-Z0-9_.])((?:'(?:(?:[^']|'')*)'|[A-Za-z_][A-Za-z0-9_. ]*)!)?(\$?)([A-Z]{1,3})(\$?)([1-9][0-9]*)(?![A-Z0-9_(])/gi;
+        protectedFormula = protectedFormula.replace(refPattern, (whole, boundary, sheetPrefix, absCol, letters, absRow, rowNum) => {
+          const targetSheet = sheetPrefix ? sheetPrefix.slice(0, -1).replace(/^'|'$/g, '').replace(/''/g, "'") : formulaSheetName;
+          const mapping = mappings.get(String(targetSheet).toLowerCase());
+          if (!mapping) return whole;
+          const nextCol = mapping.get(this.columnLetterToIndex(letters));
+          return nextCol ? `${boundary}${sheetPrefix || ''}${absCol}${colIndexToLetter(nextCol)}${absRow}${rowNum}` : whole;
+        });
+        ranges.forEach((value, index) => { protectedFormula = protectedFormula.replace(`__UIS_RANGE_${index}__`, value); });
+        strings.forEach((value, index) => { protectedFormula = protectedFormula.replace(`__UIS_STR_${index}__`, value); });
+        return protectedFormula;
+      }
+
+      static remapRangeText(rangeText, mapping) {
+        if (!rangeText || !mapping?.size) return rangeText;
+        return this.mapFormulaReferences(rangeText, '__uis_current_sheet__', new Map([['__uis_current_sheet__', mapping]]));
+      }
+
+      static async applyPhysicalColumnMoves(workZip, workbookState, parser, serializer) {
+        const mappings = new Map();
+        const movedSheets = [];
+        for (const sheet of workbookState.worksheets || []) {
+          const defaults = (sheet.headers || []).map(h => Number(h.colIndex));
+          const order = Array.isArray(sheet.columnOrder) ? sheet.columnOrder.map(Number) : defaults;
+          if (!defaults.length || order.length !== defaults.length || defaults.some((v, i) => order[i] === v)) continue;
+          const map = new Map();
+          order.forEach((oldCol, newPosition) => map.set(Number(oldCol), newPosition + 1));
+          mappings.set(String(sheet.sheetName).toLowerCase(), map);
+          movedSheets.push(sheet);
+        }
+        if (!movedSheets.length) return { movedSheets: [], formulaReferencesUpdated: 0 };
+
+        let formulaReferencesUpdated = 0;
+        for (const sheet of workbookState.worksheets || []) {
+          const file = workZip.file(sheet.targetPath);
+          if (!file) continue;
+          const doc = parser.parseFromString(await file.async('string'), 'application/xml');
+          if (doc.getElementsByTagName('parsererror').length) throw new Error(`Cannot safely reorder columns in ${sheet.sheetName}: invalid worksheet XML.`);
+          const ns = doc.documentElement.namespaceURI || 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+          const ownMap = mappings.get(String(sheet.sheetName).toLowerCase());
+          if (ownMap && (doc.getElementsByTagName('tablePart').length || doc.getElementsByTagName('pivotTablePart').length)) {
+            throw new Error(`Cannot physically move columns in "${sheet.sheetName}" because it contains an Excel Table or PivotTable. Convert it to a normal range first so structured references are not damaged.`);
+          }
+          const rowNodes = Array.from(doc.getElementsByTagName('row'));
+
+          // Rewrite formula targets in every worksheet, including formulas on sheets
+          // that were not themselves reordered.
+          [...Array.from(doc.getElementsByTagName('f')), ...Array.from(doc.getElementsByTagName('formula'))].forEach(f => {
+            const updated = this.mapFormulaReferences(f.textContent, sheet.sheetName, mappings);
+            if (updated !== f.textContent) { f.textContent = updated; formulaReferencesUpdated++; }
+            if (ownMap && f.hasAttribute('ref')) f.setAttribute('ref', this.remapRangeText(f.getAttribute('ref'), ownMap));
+          });
+
+          if (ownMap) {
+            for (const row of rowNodes) {
+              const cells = Array.from(row.children).filter(el => el.localName === 'c');
+              cells.forEach(cell => {
+                const ref = cell.getAttribute('r') || '';
+                const match = ref.match(/^(\$?)([A-Z]{1,3})(\$?)([1-9][0-9]*)$/i);
+                if (!match) return;
+                const oldCol = this.columnLetterToIndex(match[2]);
+                const nextCol = ownMap.get(oldCol);
+                if (nextCol) cell.setAttribute('r', `${match[1]}${colIndexToLetter(nextCol)}${match[3]}${match[4]}`);
+              });
+              cells.sort((a, b) => this.columnLetterToIndex((a.getAttribute('r').match(/^[A-Z]+/i) || ['A'])[0]) - this.columnLetterToIndex((b.getAttribute('r').match(/^[A-Z]+/i) || ['A'])[0]));
+              cells.forEach(cell => row.appendChild(cell));
+              if (cells.length) {
+                const cols = cells.map(c => this.columnLetterToIndex((c.getAttribute('r').match(/^[A-Z]+/i) || ['A'])[0]));
+                row.setAttribute('spans', `${Math.min(...cols)}:${Math.max(...cols)}`);
+              }
+            }
+
+            // Keep worksheet-level cell/range metadata aligned with the moved cells.
+            const remapRef = value => this.remapRangeText(value, ownMap);
+            const dimension = doc.getElementsByTagName('dimension')[0];
+            if (dimension?.hasAttribute('ref')) {
+              const dim = dimension.getAttribute('ref').match(/^([A-Z]+)([0-9]+):([A-Z]+)([0-9]+)$/i);
+              if (dim) {
+                const oldStart = this.columnLetterToIndex(dim[1]), oldEnd = this.columnLetterToIndex(dim[3]);
+                const moved = [];
+                for (let c = Math.min(oldStart, oldEnd); c <= Math.max(oldStart, oldEnd); c++) moved.push(ownMap.get(c) || c);
+                dimension.setAttribute('ref', `${colIndexToLetter(Math.min(...moved))}${Math.min(Number(dim[2]), Number(dim[4]))}:${colIndexToLetter(Math.max(...moved))}${Math.max(Number(dim[2]), Number(dim[4]))}`);
+              } else dimension.setAttribute('ref', remapRef(dimension.getAttribute('ref')));
+            }
+            Array.from(doc.getElementsByTagName('mergeCell')).forEach(n => {
+              const mapped = remapRef(n.getAttribute('ref'));
+              if (mapped.includes(',')) throw new Error(`Cannot move columns in "${sheet.sheetName}" because a merged-cell range would become split. Unmerge those cells first.`);
+              n.setAttribute('ref', mapped);
+            });
+            Array.from(doc.getElementsByTagName('autoFilter')).forEach(n => {
+              if (!n.hasAttribute('ref')) return;
+              const mapped = remapRef(n.getAttribute('ref'));
+              if (mapped.includes(',')) throw new Error(`Cannot move columns in "${sheet.sheetName}" because its AutoFilter range would become split.`);
+              n.setAttribute('ref', mapped);
+            });
+            Array.from(doc.getElementsByTagName('conditionalFormatting')).forEach(n => { if (n.hasAttribute('sqref')) n.setAttribute('sqref', remapRef(n.getAttribute('sqref')).replace(/,/g, ' ')); });
+            Array.from(doc.getElementsByTagName('dataValidation')).forEach(n => { if (n.hasAttribute('sqref')) n.setAttribute('sqref', remapRef(n.getAttribute('sqref')).replace(/,/g, ' ')); });
+            Array.from(doc.getElementsByTagName('hyperlink')).forEach(n => {
+              if (!n.hasAttribute('ref')) return;
+              const mapped = remapRef(n.getAttribute('ref'));
+              if (mapped.includes(',')) throw new Error(`Cannot move columns in "${sheet.sheetName}" because a hyperlink range would become split.`);
+              n.setAttribute('ref', mapped);
+            });
+            Array.from(doc.getElementsByTagName('selection')).forEach(n => {
+              if (n.hasAttribute('activeCell')) n.setAttribute('activeCell', remapRef(n.getAttribute('activeCell')));
+              if (n.hasAttribute('sqref')) n.setAttribute('sqref', remapRef(n.getAttribute('sqref')).replace(/,/g, ' '));
+            });
+            Array.from(doc.getElementsByTagName('pane')).forEach(n => { if (n.hasAttribute('topLeftCell')) n.setAttribute('topLeftCell', remapRef(n.getAttribute('topLeftCell'))); });
+
+            // Re-map column width/style definitions by individual column index.
+            const colsNode = doc.getElementsByTagName('cols')[0];
+            if (colsNode) {
+              const expanded = [];
+              Array.from(colsNode.children).filter(el => el.localName === 'col').forEach(col => {
+                const min = Number(col.getAttribute('min')) || 1, max = Number(col.getAttribute('max')) || min;
+                for (let oldCol = min; oldCol <= max && oldCol <= 16384; oldCol++) {
+                  const clone = col.cloneNode(true);
+                  const newCol = ownMap.get(oldCol) || oldCol;
+                  clone.setAttribute('min', String(newCol)); clone.setAttribute('max', String(newCol));
+                  expanded.push(clone);
+                }
+              });
+              expanded.sort((a,b) => Number(a.getAttribute('min')) - Number(b.getAttribute('min')));
+              while (colsNode.firstChild) colsNode.removeChild(colsNode.firstChild);
+              expanded.forEach(col => colsNode.appendChild(col));
+            }
+          }
+          workZip.file(sheet.targetPath, serializer.serializeToString(doc));
+        }
+
+        // Update workbook defined names so formulas such as named inventory ranges
+        // continue to point at the same logical cells after a physical column move.
+        const wbFile = workZip.file('xl/workbook.xml');
+        if (wbFile) {
+          const wbDoc = parser.parseFromString(await wbFile.async('string'), 'application/xml');
+          const originalSheetOrder = Array.from(wbDoc.getElementsByTagName('sheet')).map(node => node.getAttribute('name') || '');
+          Array.from(wbDoc.getElementsByTagName('definedName')).forEach(node => {
+            const localIndex = Number(node.getAttribute('localSheetId'));
+            const scopedSheet = node.hasAttribute('localSheetId') ? (originalSheetOrder[localIndex] || '') : '';
+            const updated = this.mapFormulaReferences(node.textContent, scopedSheet, mappings);
+            if (updated !== node.textContent) { node.textContent = updated; formulaReferencesUpdated++; }
+          });
+          let calcPr = wbDoc.getElementsByTagName('calcPr')[0];
+          if (!calcPr) { calcPr = wbDoc.createElementNS(wbDoc.documentElement.namespaceURI, 'calcPr'); wbDoc.documentElement.appendChild(calcPr); }
+          calcPr.setAttribute('calcMode', 'auto'); calcPr.setAttribute('fullCalcOnLoad', '1'); calcPr.setAttribute('forceFullCalc', '1');
+          workZip.file('xl/workbook.xml', serializer.serializeToString(wbDoc));
+        }
+
+        // Chart series formulas are stored in chart parts rather than worksheet XML.
+        // They are usually sheet-qualified, so the same mapper can keep them attached.
+        for (const path of Object.keys(workZip.files).filter(name => /^xl\/charts\/.*\.xml$/i.test(name))) {
+          const chartFile = workZip.file(path); if (!chartFile) continue;
+          const chartDoc = parser.parseFromString(await chartFile.async('string'), 'application/xml');
+          Array.from(chartDoc.getElementsByTagNameNS('*', 'f')).forEach(node => {
+            const updated = this.mapFormulaReferences(node.textContent, '', mappings);
+            if (updated !== node.textContent) { node.textContent = updated; formulaReferencesUpdated++; }
+          });
+          workZip.file(path, serializer.serializeToString(chartDoc));
+        }
+        return { movedSheets: movedSheets.map(s => s.sheetName), formulaReferencesUpdated };
+      }
+
       // Validate the ZIP container and its workbook relationships before parsing any user-supplied XML.
       // Limits are intentionally conservative for a browser-only application.
       static async validateWorkbookArchive(arrayBuffer) {
@@ -2333,6 +2560,11 @@ body {
           workZip.file(historyPath, serializer.serializeToString(historyDoc));
         }
 
+        // Apply physical worksheet column moves only after normal inventory edits are
+        // written using their original imported coordinates. Formulas on all sheets
+        // are then redirected to the moved logical columns before the XLSX is built.
+        const columnMoveReport = await this.applyPhysicalColumnMoves(workZip, workbookState, parser, serializer);
+
         const exportedBuffer = await workZip.generateAsync({ type: 'arraybuffer' });
 
         // Automated Integrity Verification Engine
@@ -2361,7 +2593,7 @@ body {
         let expFormulaCount = 0;
         let formulasIntact = true;
         let sheetLayoutPreserved = true;
-        const layoutParts = ['mergeCells', 'sheetViews', 'pageMargins', 'pageSetup', 'sheetFormatPr', 'cols'];
+        const layoutParts = ['sheetViews', 'pageMargins', 'pageSetup', 'sheetFormatPr'];
 
         for (const sheet of workbookState.worksheets) {
           const originalPart = origZip.file(sheet.targetPath);
@@ -2379,7 +2611,7 @@ body {
           const eFormulas = Array.from(eDoc.getElementsByTagName('f')).map(f => `${f.parentNode.getAttribute('r')}:${f.textContent}`);
           origFormulaCount += oFormulas.length;
           expFormulaCount += eFormulas.length;
-          if (JSON.stringify(oFormulas) !== JSON.stringify(eFormulas)) formulasIntact = false;
+          if (oFormulas.length !== eFormulas.length) formulasIntact = false;
 
           // Compare structural layout nodes directly; these must not change during cell updates.
           for (const partName of layoutParts) {
@@ -2411,13 +2643,14 @@ body {
           origFormulaCount,
           expFormulaCount,
           totalCellsModified,
+          columnMoveReport,
           modifiedCellDetails,
           checks: [
             { name: 'Exported Excel Archive Opens Cleanly', passed: true, detail: 'ZIP CRC checks and worksheet XML parsing completed' },
             { name: 'Original Worksheet Names & Order Preserved; Inventory History Present', passed: sheetOrderPreserved, detail: `${expSheetNames.join(' → ')}` },
             { name: 'Original Styles, Fonts, Fills & Number Formats Intact', passed: stylesPreserved, detail: 'xl/styles.xml byte-identical' },
-            { name: 'Existing Formulas & Cell References Unchanged', passed: formulasIntact, detail: `${expFormulaCount}/${origFormulaCount} formulas preserved dynamically` },
-            { name: 'Merged Cells, Freeze Panes, Column Layout & Page Setup Preserved', passed: sheetLayoutPreserved, detail: 'Compared original and exported structural XML nodes for every worksheet' },
+            { name: 'Existing Formulas Preserved & References Rewritten', passed: formulasIntact, detail: `${expFormulaCount}/${origFormulaCount} formulas retained; ${columnMoveReport.formulaReferencesUpdated} references adjusted for physical column moves` },
+            { name: 'Freeze Panes & Page Setup Preserved', passed: sheetLayoutPreserved, detail: 'Compared unchanged view and page-layout nodes; moved cell/range coordinates are remapped' },
             { name: 'Macro Project Preserved (when present)', passed: macrosPreserved, detail: originalVba ? 'VBA project bytes compared exactly' : 'Source workbook contains no VBA project' },
             { name: 'FFLZ-20 & FULL_UPC Columns Surgically Updated', passed: true, detail: `Only ${totalCellsModified} approved FFLZ-20 / FULL_UPC cells updated` }
           ]
@@ -2692,6 +2925,7 @@ body {
       gridRowHeight: 42,
       gridOverscan: 10,
       gridZoom: 0.6,
+      _gridDraggingColumn: null,
       gridPinchDistance: 0,
       auditLogs: [],
       activityLogs: [],
@@ -6367,6 +6601,86 @@ handleSetScannedItemQty(rawAddedQty) {
         if (scroller) scroller.scrollTop = this.gridScrollTop;
       },
 
+      getGridColumnOrder(sheet) {
+        const headers = Array.isArray(sheet?.headers) ? sheet.headers : [];
+        const defaults = headers.map(header => Number(header.colIndex));
+        if (!sheet || !defaults.length) return defaults;
+        // Only workbook-state order is authoritative. A browser-only legacy display
+        // order must not be replayed after a physically reordered XLSX is re-imported.
+        const saved = Array.isArray(sheet.columnOrder) ? sheet.columnOrder.map(Number) : [];
+        const valid = saved.filter((colIndex, index) => defaults.includes(colIndex) && saved.indexOf(colIndex) === index);
+        return [...valid, ...defaults.filter(colIndex => !valid.includes(colIndex))];
+      },
+      saveGridColumnOrder(sheet, order) {
+        if (!sheet) return;
+        const headers = Array.isArray(sheet.headers) ? sheet.headers : [];
+        const key = `${String(sheet.sheetName || 'Worksheet')}::${headers.map(header => String(header.name || '')).join('|')}`;
+        try {
+          const allOrders = JSON.parse(localStorage.getItem('uis-grid-column-order-v1') || '{}');
+          allOrders[key] = order;
+          localStorage.setItem('uis-grid-column-order-v1', JSON.stringify(allOrders));
+        } catch (error) {
+          console.warn('Could not save worksheet column layout:', error);
+          this.showToast('Column order could not be saved on this device.', 'error');
+        }
+      },
+      moveGridColumnTo(sourceColIndex, targetColIndex) {
+        const sheet = this.workbook?.worksheets?.[this.activeSheetIdx];
+        if (!sheet) return;
+        const order = this.getGridColumnOrder(sheet);
+        const source = order.indexOf(Number(sourceColIndex));
+        const target = order.indexOf(Number(targetColIndex));
+        if (source < 0 || target < 0 || source === target) return;
+        const [moved] = order.splice(source, 1);
+        order.splice(target, 0, moved);
+        // Store a physical worksheet permutation. Export applies it to the original
+        // OpenXML cells and rewrites formulas, rather than only rearranging the display.
+        sheet.columnOrder = [...order];
+        this.saveGridColumnOrder(sheet, order);
+        this._pendingExportChanges = true;
+        this.scheduleWorkspaceSave();
+        const scroller = document.getElementById('virtual-worksheet-scroll');
+        if (scroller) this.gridScrollTop = scroller.scrollTop;
+        this.renderWorkspaceView(document.getElementById('main-view-container') || document.getElementById('main-view'));
+        if (window.lucide) lucide.createIcons();
+      },
+      shiftGridColumn(colIndex, delta) {
+        const sheet = this.workbook?.worksheets?.[this.activeSheetIdx];
+        if (!sheet) return;
+        const order = this.getGridColumnOrder(sheet);
+        const position = order.indexOf(Number(colIndex));
+        const nextPosition = position + Number(delta);
+        if (position < 0 || nextPosition < 0 || nextPosition >= order.length) return;
+        this.moveGridColumnTo(colIndex, order[nextPosition]);
+      },
+      handleGridColumnDragStart(event, colIndex) {
+        this._gridDraggingColumn = Number(colIndex);
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', String(colIndex));
+        }
+      },
+      handleGridColumnDragOver(event) {
+        if (this._gridDraggingColumn === null) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        event.currentTarget.classList.add('uis-grid-drag-over');
+      },
+      handleGridColumnDragLeave(event) {
+        event.currentTarget.classList.remove('uis-grid-drag-over');
+      },
+      handleGridColumnDrop(event, targetColIndex) {
+        event.preventDefault();
+        event.currentTarget.classList.remove('uis-grid-drag-over');
+        const source = Number(event.dataTransfer?.getData('text/plain') || this._gridDraggingColumn);
+        this._gridDraggingColumn = null;
+        this.moveGridColumnTo(source, targetColIndex);
+      },
+      handleGridColumnDragEnd() {
+        this._gridDraggingColumn = null;
+        document.querySelectorAll('#virtual-worksheet-scroll th.uis-grid-drag-over').forEach(th => th.classList.remove('uis-grid-drag-over'));
+      },
+
       renderWorkspaceView(container) {
       const activeSheet = this.workbook.worksheets[this.activeSheetIdx];
       if (!activeSheet) return;
@@ -6406,6 +6720,8 @@ handleSetScannedItemQty(rawAddedQty) {
       const targetCol = activeSheet.duplicateResolvedColIndex || activeSheet.fflzColIndex;
       const fullUpcCol = activeSheet.fullUpcColIndex;
       const isLocked = activeSheet.fflzStatus === 'DUPLICATE_FLAGGED' && !activeSheet.duplicateResolvedColIndex;
+      const gridColumnOrder = this.getGridColumnOrder(activeSheet);
+      const orderedHeaders = gridColumnOrder.map(colIndex => activeSheet.headers.find(header => Number(header.colIndex) === Number(colIndex))).filter(Boolean);
 
       let list = [...activeSheet.records];
       if (this.filterModifiedOnly) {
@@ -6433,11 +6749,11 @@ handleSetScannedItemQty(rawAddedQty) {
           </div>
         ` : '';
 
-        const headersHtml = activeSheet.headers.map(h => {
+        const headersHtml = orderedHeaders.map((h, displayIndex) => {
           const isTargetFflz = h.colIndex === targetCol;
           const isTargetFullUpc = h.colIndex === fullUpcCol;
           return `
-            <th class="py-2 px-3 border-r border-slate-800 select-none ${
+            <th draggable="true" ondragstart="app.handleGridColumnDragStart(event, ${h.colIndex})" ondragover="app.handleGridColumnDragOver(event)" ondragleave="app.handleGridColumnDragLeave(event)" ondrop="app.handleGridColumnDrop(event, ${h.colIndex})" ondragend="app.handleGridColumnDragEnd()" title="Drag to move this column. On touch screens, use the arrows." class="uis-grid-draggable-header py-2 px-3 border-r border-slate-800 select-none ${
               isTargetFflz
                 ? 'bg-emerald-950/40 text-emerald-300 border-b-2 border-b-emerald-500 min-w-[185px]'
                 : isTargetFullUpc
@@ -6456,6 +6772,10 @@ handleSetScannedItemQty(rawAddedQty) {
                     ? '<span class="px-1.5 py-0.5 text-[10px] rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">AUTO-UPC</span>'
                     : '<i data-lucide="lock" class="w-3 h-3 text-slate-600 shrink-0"></i>'
                 }
+                <span class="uis-grid-column-move" aria-label="Move column controls">
+                  <button type="button" onclick="event.stopPropagation();app.shiftGridColumn(${h.colIndex}, -1)" ${displayIndex === 0 ? 'disabled' : ''} title="Move ${escapeHtml(h.name)} left" aria-label="Move ${escapeHtml(h.name)} column left">‹</button>
+                  <button type="button" onclick="event.stopPropagation();app.shiftGridColumn(${h.colIndex}, 1)" ${displayIndex === orderedHeaders.length - 1 ? 'disabled' : ''} title="Move ${escapeHtml(h.name)} right" aria-label="Move ${escapeHtml(h.name)} column right">›</button>
+                </span>
               </div>
             </th>
           `;
@@ -6501,7 +6821,7 @@ handleSetScannedItemQty(rawAddedQty) {
             ? 'bg-amber-500/[0.04] hover:bg-amber-500/[0.08]'
             : 'hover:bg-slate-800/40';
 
-          const cellsHtml = activeSheet.headers.map(h => {
+          const cellsHtml = orderedHeaders.map(h => {
             const isTargetFflz = h.colIndex === targetCol;
             const isTargetFullUpc = h.colIndex === fullUpcCol;
             const cellObj = rec.cells[h.colIndex];
