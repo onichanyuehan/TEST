@@ -622,6 +622,9 @@ body {
     #activity-log-table th *,
     #activity-log-table td * { line-height: 10px !important; }
     #activity-log-table-wrap { width: 100%; max-width: none; border-left: 0 !important; border-right: 0 !important; border-radius: 0 !important; }
+    .activity-date-tabs { scrollbar-width: thin; scrollbar-color: rgba(148,163,184,.45) transparent; }
+    .activity-date-tabs::-webkit-scrollbar { height: 5px; }
+    .activity-date-tabs::-webkit-scrollbar-thumb { background: rgba(148,163,184,.45); border-radius: 999px; }
 
     /* Clean, unified application header. Keep one menu trigger and one active-view label. */
     header.sticky.uis-app-header {
@@ -2576,12 +2579,38 @@ body {
         const next = document.querySelector('#main-view-container input[oninput*="filterActivityLog"]');
         if (next) { next.focus(); try { next.setSelectionRange(caret, caret); } catch (_) {} }
       },
-      exportActivityLog() {
-        const rows = (this.activityLogs || []).map(e => [e.itemName, e.action, e.timestamp, e.actor, e.sheetName, e.rowNumber, e.barcode, e.previousValue, e.newValue, e.quantityChange, e.reference, e.details]);
-        if (!rows.length) { this.showToast('There is no activity history to export yet.', 'error'); return; }
-        this.downloadCsv('UIS_Company_Activity_Log.csv', ['What / Item','Action','When','Who','Worksheet','Row','Barcode','Previous Value','New Value','Quantity Change','Reference','Details'], rows);
-        this.recordActivity('ACTIVITY_LOG_EXPORTED', { details: 'Company activity log exported to a local CSV file.' }, { category: 'system', affectsWorkbook: false });
-        this.showToast('Company activity log exported.');
+      selectActivityDate(dateKey) {
+        this.activitySelectedDate = String(dateKey || '');
+        this.renderActivityLogView(document.getElementById('main-view-container'));
+      },
+      openActivityExportModal() {
+        const logs = Array.isArray(this.activityLogs) ? this.activityLogs : [];
+        if (!logs.length) { this.showToast('There is no activity history to export yet.', 'error'); return; }
+        this.activityExportDate = this.activitySelectedDate || 'all';
+        this.activityExportModalOpen = true;
+        this.renderActivityLogView(document.getElementById('main-view-container'));
+      },
+      closeActivityExportModal() {
+        this.activityExportModalOpen = false;
+        this.renderActivityLogView(document.getElementById('main-view-container'));
+      },
+      exportActivityLog(dateKey) {
+        const logs = Array.isArray(this.activityLogs) ? this.activityLogs : [];
+        const keyFor = value => {
+          const d = new Date(value);
+          return Number.isFinite(d.getTime()) ? `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` : 'unknown-date';
+        };
+        const selected = String(dateKey || this.activityExportDate || 'all');
+        const sorted = logs.filter(e => selected === 'all' || keyFor(e.timestamp) === selected)
+          .slice().sort((a,b) => keyFor(b.timestamp).localeCompare(keyFor(a.timestamp)) || new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+        if (!sorted.length) { this.showToast('There are no activity records for that date.', 'error'); return; }
+        const rows = sorted.map(e => [keyFor(e.timestamp), e.itemName, e.action, e.timestamp, e.actor, e.sheetName, e.rowNumber, e.barcode, e.previousValue, e.newValue, e.quantityChange, e.reference, e.details]);
+        const suffix = selected === 'all' ? 'All_Dates' : selected.replace(/[^0-9-]/g, '_');
+        this.downloadCsv(`UIS_Activity_Log_${suffix}.csv`, ['Activity Date','What / Item','Action','When','Who','Worksheet','Row','Barcode','Previous Value','New Value','Quantity Change','Reference','Details'], rows);
+        this.activityExportModalOpen = false;
+        this.recordActivity('ACTIVITY_LOG_EXPORTED', { details: `Exported ${sorted.length} activity record(s) for ${selected === 'all' ? 'all dates' : selected} to CSV.` }, { category: 'system', affectsWorkbook: false });
+        this.showToast(`Activity log CSV exported: ${selected === 'all' ? 'all dates' : selected}.`);
+        this.renderActivityLogView(document.getElementById('main-view-container'));
       },
       getBackupReminderInfo() {
         let last = 0;
@@ -2653,6 +2682,9 @@ body {
       posCashReceived: '',
       posLastReceipt: null,
       activitySearchQuery: '',
+      activitySelectedDate: '',
+      activityExportDate: 'all',
+      activityExportModalOpen: false,
       _pendingExportChanges: false,
       _lastWorkbookExportAt: 0,
       isScannerOpen: false,
@@ -3895,7 +3927,8 @@ body {
       },
 
       switchView(viewId) {
-        this.activeView = viewId;
+        // Legacy Cell Audit History is retired from navigation; route old links to Activity Log.
+        this.activeView = viewId === 'history' ? 'activity-log' : viewId;
         this.toggleSidebarDrawer(false);
         this.renderAll();
       },
@@ -5374,6 +5407,7 @@ handleSetScannedItemQty(rawAddedQty) {
             this.activeView === 'operations' ? 'Operations' :
             this.activeView === 'pos' ? 'POS' :
             this.activeView === 'bulk' ? 'Bulk' :
+            this.activeView === 'activity-log' ? 'Activity' :
             this.activeView === 'history' ? 'History' :
             this.activeView === 'insights' ? 'Insights' :
             this.activeView === 'integrity' ? 'Verify' : 'Tests';
@@ -5642,8 +5676,7 @@ handleSetScannedItemQty(rawAddedQty) {
             { id: 'insights', label: 'Inventory Insights & Backups', icon: 'chart-no-axes-combined' },
           ]},
           { label: 'Activity', items: [
-            { id: 'activity-log', label: `Company Activity (${this.activityLogs.length})`, icon: 'clipboard-list' },
-            { id: 'history', label: `Cell Audit History (${this.auditLogs.length})`, icon: 'history' },
+            { id: 'activity-log', label: `Activity Log (${this.activityLogs.length})`, icon: 'clipboard-list' },
           ]},
           { label: 'System & Data', items: [
             { id: 'integrity', label: 'OpenXML Integrity Check', icon: 'shield-check' },
@@ -5723,7 +5756,7 @@ handleSetScannedItemQty(rawAddedQty) {
           return;
         }
         if (this.activeView === 'activity-log') {
-          if (stageTitle) stageTitle.textContent = `Company Activity Log (${this.activityLogs.length})`;
+          if (stageTitle) stageTitle.textContent = `Activity Log (${this.activityLogs.length})`;
           this.renderActivityLogView(container);
           lucide.createIcons();
           return;
@@ -5749,9 +5782,6 @@ handleSetScannedItemQty(rawAddedQty) {
         } else if (this.activeView === 'bulk') {
           if (stageTitle) stageTitle.textContent = 'Bulk Inventory Paste';
           this.renderBulkView(container);
-        } else if (this.activeView === 'history') {
-          if (stageTitle) stageTitle.textContent = `Session Audit Log (${this.auditLogs.length})`;
-          this.renderHistoryView(container);
         } else if (this.activeView === 'insights') {
           if (stageTitle) stageTitle.textContent = 'Inventory Insights & Backup Management';
           this.renderInsightsView(container);
@@ -6511,9 +6541,28 @@ handleSetScannedItemQty(rawAddedQty) {
       renderActivityLogView(container) {
         const q = String(this.activitySearchQuery || '').trim().toLowerCase();
         const all = Array.isArray(this.activityLogs) ? this.activityLogs : [];
-        const filtered = q ? all.filter(e => [e.actor,e.action,e.itemName,e.barcode,e.sheetName,e.details,e.reference].join(' ').toLowerCase().includes(q)) : all;
-        const shown = filtered.slice(0, 1000);
+        const filtered = (q ? all.filter(e => [e.actor,e.action,e.itemName,e.barcode,e.sheetName,e.details,e.reference].join(' ').toLowerCase().includes(q)) : all)
+          .slice().sort((a,b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+        const dateKeyFor = value => {
+          const d = new Date(value);
+          if (!Number.isFinite(d.getTime())) return 'unknown-date';
+          return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        };
         const fmt = value => value ? new Date(value).toLocaleString() : '—';
+        const today = dateKeyFor(Date.now());
+        const yesterdayDate = new Date(); yesterdayDate.setDate(yesterdayDate.getDate()-1);
+        const yesterday = dateKeyFor(yesterdayDate.getTime());
+        const labelForDate = key => key === today ? 'Today' : key === yesterday ? 'Yesterday' : key === 'unknown-date' ? 'Unknown date' : new Date(`${key}T12:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+        const grouped = new Map();
+        filtered.forEach(e => {
+          const key = dateKeyFor(e.timestamp);
+          if (!grouped.has(key)) grouped.set(key, []);
+          grouped.get(key).push(e);
+        });
+        const dateKeys = Array.from(grouped.keys());
+        if (!dateKeys.includes(this.activitySelectedDate)) this.activitySelectedDate = dateKeys[0] || '';
+        const selectedEvents = this.activitySelectedDate ? (grouped.get(this.activitySelectedDate) || []) : [];
+        const shown = selectedEvents.slice(0,1000);
         const itemLabelFor = e => {
           const idx = e.sheetIdx !== '' && e.sheetIdx !== undefined ? Number(e.sheetIdx) :
             (e.sheetName && this.workbook?.worksheets ? this.workbook.worksheets.findIndex(ws => ws.sheetName === e.sheetName) : -1);
@@ -6528,25 +6577,29 @@ handleSetScannedItemQty(rawAddedQty) {
           if (idx < 0 || !hasRow || !this.workbook?.worksheets?.[idx]) return `<span class="text-neutral-500">${escapeHtml(e.sheetName || 'Workspace')} ${hasRow ? `· Row ${escapeHtml(e.rowNumber)}` : ''}</span>`;
           return `<button onclick="app.openActivityLocation(${idx},${Number(e.rowNumber)})" class="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-300 hover:bg-emerald-500/20"><i data-lucide="external-link" class="h-3 w-3"></i>${escapeHtml(e.sheetName)} · Row ${escapeHtml(e.rowNumber)} · Open row</button>`;
         };
+        const rows = shown.map(e => `<tr class="border-t border-white/5 align-top hover:bg-white/[.025]"><td class="p-3 text-white"><div class="font-semibold">${escapeHtml(itemLabelFor(e))}</div><div class="mt-1"><span class="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[10px] text-neutral-300">${escapeHtml(String(e.action || '').replace(/_/g,' ').toLowerCase())}</span></div>${e.barcode?`<div class="mt-2 text-[10px] font-mono text-neutral-500">Barcode: ${escapeHtml(e.barcode)}</div>`:''}</td><td class="p-3 whitespace-nowrap font-mono text-neutral-400">${escapeHtml(fmt(e.timestamp))}</td><td class="p-3 whitespace-nowrap font-semibold text-emerald-300">${escapeHtml(e.actor || 'Unknown')}</td><td class="p-3">${locationFor(e)}</td><td class="p-3 max-w-sm whitespace-normal text-neutral-400">${e.previousValue!=='' && e.previousValue!==undefined ? `<div><span class="text-neutral-500">Before:</span> <span class="font-mono">${escapeHtml(e.previousValue)}</span></div>`:''}${e.newValue!=='' && e.newValue!==undefined ? `<div><span class="text-neutral-500">After:</span> <span class="font-mono text-white">${escapeHtml(e.newValue)}</span></div>`:''}${e.quantityChange!=='' && e.quantityChange!==undefined ? `<div class="mt-1 text-emerald-300">Qty change: ${Number(e.quantityChange)>0?'+':''}${escapeHtml(e.quantityChange)}</div>`:''}${e.details?`<div class="mt-1">${escapeHtml(e.details)}</div>`:''}${e.reference?`<div class="mt-1 text-[10px] text-neutral-500">Ref: ${escapeHtml(e.reference)}</div>`:''}</td></tr>`).join('');
+        const exportDateKeys = Array.from(new Set(all.map(e => dateKeyFor(e.timestamp))));
+        const exportModalHtml = this.activityExportModalOpen ? `<div class="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-labelledby="activity-export-title"><div class="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-5 shadow-2xl"><div class="flex items-center justify-between gap-3"><h3 id="activity-export-title" class="text-base font-bold text-white">Export Activity Log</h3><button type="button" onclick="app.closeActivityExportModal()" class="rounded-lg px-2 py-1 text-neutral-400 hover:bg-white/10 hover:text-white" aria-label="Close">✕</button></div><p class="mt-2 text-xs text-neutral-400">Choose a date to export. All dates exports the complete history, grouped chronologically by date.</p><label for="activity-export-date" class="mt-4 block text-xs font-semibold text-neutral-300">Activity date</label><select id="activity-export-date" onchange="app.activityExportDate=this.value" class="mt-2 w-full rounded-lg border border-white/10 bg-slate-950 px-3 py-3 text-sm text-white outline-none focus:border-emerald-500"><option value="all" ${this.activityExportDate==='all'?'selected':''}>All dates (${all.length.toLocaleString()} events)</option>${exportDateKeys.map(key=>`<option value="${escapeHtml(key)}" ${this.activityExportDate===key?'selected':''}>${escapeHtml(labelForDate(key))} (${all.filter(e=>dateKeyFor(e.timestamp)===key).length.toLocaleString()} events)</option>`).join('')}</select><div class="mt-5 flex justify-end gap-2"><button type="button" onclick="app.closeActivityExportModal()" class="rounded-lg border border-white/10 px-4 py-2 text-xs font-semibold text-neutral-300 hover:bg-white/5">Cancel</button><button type="button" onclick="app.exportActivityLog(document.getElementById('activity-export-date').value)" class="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500">Export CSV</button></div></div></div>` : '';
         container.innerHTML = `
           <section class="w-full min-w-0 space-y-4">
             <div class="flex flex-wrap items-start justify-between gap-3 px-3 sm:px-4 py-3">
-              <div><h2 class="text-base font-bold text-white flex items-center gap-2"><i data-lucide="clipboard-list" class="w-5 h-5 text-emerald-400"></i> Company Activity Log</h2>
-                <p class="mt-1 text-xs text-neutral-400">Every entry is organized as What changed, When it happened, and Who made the change. Open a linked worksheet row to inspect the affected record.</p></div>
-              <button onclick="app.exportActivityLog()" class="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white">Export activity CSV</button>
+              <div><h2 class="text-base font-bold text-white flex items-center gap-2"><i data-lucide="clipboard-list" class="w-5 h-5 text-emerald-400"></i> Activity Log</h2>
+                <p class="mt-1 text-xs text-neutral-400">Browse activity by date. Open a linked worksheet row to inspect the affected record.</p></div>
+              <button onclick="app.openActivityExportModal()" class="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white">Export activity CSV</button>
             </div>
             <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 px-3 sm:px-4">
               <div class="rounded-xl bg-black/30 p-3"><div class="text-[10px] text-neutral-500">All recorded events</div><div class="text-xl font-bold text-white">${all.length.toLocaleString()}</div></div>
               <div class="rounded-xl bg-black/30 p-3"><div class="text-[10px] text-neutral-500">Accounts represented</div><div class="text-xl font-bold text-white">${new Set(all.map(e=>e.actor).filter(Boolean)).size}</div></div>
-              <div class="rounded-xl bg-black/30 p-3 col-span-2 sm:col-span-1"><div class="text-[10px] text-neutral-500">Latest activity</div><div class="text-xs font-semibold text-emerald-300">${all.length ? escapeHtml(fmt(all[0].timestamp)) : 'No activity yet'}</div></div>
+              <div class="rounded-xl bg-black/30 p-3 col-span-2 sm:col-span-1"><div class="text-[10px] text-neutral-500">Latest activity</div><div class="text-xs font-semibold text-emerald-300">${all.length ? escapeHtml(fmt(all.reduce((latest,e)=>new Date(e.timestamp||0).getTime()>new Date(latest.timestamp||0).getTime()?e:latest,all[0]).timestamp)) : 'No activity yet'}</div></div>
             </div>
             <input type="search" value="${escapeHtml(this.activitySearchQuery)}" oninput="app.filterActivityLog(this.value)" placeholder="Search user, action, item, barcode, worksheet…" class="w-[calc(100%-24px)] mx-3 sm:w-[calc(100%-32px)] sm:mx-4 rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-xs text-white outline-none focus:border-emerald-500/50" />
-            <div class="px-3 sm:px-4 text-[10px] text-neutral-500">Showing ${shown.length.toLocaleString()} of ${filtered.length.toLocaleString()} matching events. The log is stored locally with the company workspace and included in manual backups.</div>
-            ${shown.length ? `<div id="activity-log-table-wrap" class="overflow-auto w-full"><table id="activity-log-table" class="w-full min-w-[980px] text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-3">What changed</th><th class="p-3">When</th><th class="p-3">Who</th><th class="p-3">Where · open record</th><th class="p-3">Change details</th></tr></thead><tbody>${shown.map(e=>`<tr class="border-t border-white/5 align-top hover:bg-white/[.025]"><td class="p-3 text-white"><div class="font-semibold">${escapeHtml(itemLabelFor(e))}</div><div class="mt-1"><span class="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[10px] text-neutral-300">${escapeHtml(String(e.action || '').replace(/_/g,' ').toLowerCase())}</span></div>${e.barcode?`<div class="mt-2 text-[10px] font-mono text-neutral-500">Barcode: ${escapeHtml(e.barcode)}</div>`:''}</td><td class="p-3 whitespace-nowrap font-mono text-neutral-400">${escapeHtml(fmt(e.timestamp))}</td><td class="p-3 whitespace-nowrap font-semibold text-emerald-300">${escapeHtml(e.actor || 'Unknown')}</td><td class="p-3">${locationFor(e)}</td><td class="p-3 max-w-sm whitespace-normal text-neutral-400">${e.previousValue!=='' && e.previousValue!==undefined ? `<div><span class="text-neutral-500">Before:</span> <span class="font-mono">${escapeHtml(e.previousValue)}</span></div>`:''}${e.newValue!=='' && e.newValue!==undefined ? `<div><span class="text-neutral-500">After:</span> <span class="font-mono text-white">${escapeHtml(e.newValue)}</span></div>`:''}${e.quantityChange!=='' && e.quantityChange!==undefined ? `<div class="mt-1 text-emerald-300">Qty change: ${Number(e.quantityChange)>0?'+':''}${escapeHtml(e.quantityChange)}</div>`:''}${e.details?`<div class="mt-1">${escapeHtml(e.details)}</div>`:''}${e.reference?`<div class="mt-1 text-[10px] text-neutral-500">Ref: ${escapeHtml(e.reference)}</div>`:''}</td></tr>`).join('')}</tbody></table></div>` : `<div class="py-12 text-center text-sm text-neutral-500">${all.length ? 'No activity matches that search.' : 'No successful inventory changes have been recorded yet.'}</div>`}
+            <div class="px-3 sm:px-4 text-[10px] text-neutral-500">${filtered.length.toLocaleString()} matching events across ${dateKeys.length} date(s). Select a date to view its activity.</div>
+            ${dateKeys.length ? `<div class="activity-date-tabs flex items-stretch gap-2 overflow-x-auto whitespace-nowrap px-3 sm:px-4 pb-2" role="tablist" aria-label="Activity log dates">${dateKeys.map(key=>{const active=key===this.activitySelectedDate;return `<button type="button" role="tab" aria-selected="${active}" onclick="app.selectActivityDate('${key}')" class="shrink-0 rounded-xl border px-4 py-2 text-left transition ${active?'border-emerald-500/50 bg-emerald-500/15 text-white':'border-white/10 bg-black/25 text-neutral-400 hover:bg-white/5 hover:text-white'}"><span class="block text-xs font-semibold">${escapeHtml(labelForDate(key))}</span><span class="mt-1 block text-[10px] ${active?'text-emerald-300':'text-neutral-500'}">${grouped.get(key).length.toLocaleString()} ${grouped.get(key).length===1?'event':'events'}</span></button>`;}).join('')}</div>` : ''}
+            ${shown.length ? `<div class="px-3 sm:px-4 flex items-center justify-between gap-2"><div class="text-sm font-semibold text-white">${escapeHtml(labelForDate(this.activitySelectedDate))}</div><div class="text-[10px] text-neutral-500">${shown.length.toLocaleString()} of ${selectedEvents.length.toLocaleString()} events</div></div><div id="activity-log-table-wrap" class="overflow-auto w-full"><table id="activity-log-table" class="w-full min-w-[980px] text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-3">What changed</th><th class="p-3">When</th><th class="p-3">Who</th><th class="p-3">Where · open record</th><th class="p-3">Change details</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="py-12 text-center text-sm text-neutral-500">${filtered.length ? 'No activity is available for this date.' : all.length ? 'No activity matches that search.' : 'No activity has been recorded yet.'}</div>`}
+            ${exportModalHtml}
           </section>`;
         if (window.lucide) lucide.createIcons();
       },
-
       renderHistoryView(container) {
         container.innerHTML = `
           <div class="flex-1 bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
