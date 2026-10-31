@@ -1078,27 +1078,38 @@ body {
       };
 
       worksheets.forEach((ws, sheetIdx) => {
-        // Detect the barcode/code column from actual worksheet contents: the eligible
-        // column containing the greatest total number of numeric characters wins.
-        const numericExcluded = /\b(name|description|qty|quantity|stock|fflz|price|cost|amount|date|time|phone|zip|postal|row)\b|item\s*(name|description)|product\s*name/i;
-        let detectedCodeHeader = null, detectedCodeScore = -1;
-        ws.headers.forEach(h => {
-          if (h.isFflz || numericExcluded.test(String(h.name || ''))) return;
-          let digits = 0, populated = 0;
-          ws.records.forEach(rec => {
-            const raw = h.colIndex === ws.fullUpcColIndex
-              ? (rec.currentFullUpcValue ?? '')
-              : (rec.cells?.[h.colIndex]?.value ?? '');
-            const value = String(raw).trim();
-            if (!value) return;
-            populated++;
-            digits += (value.match(/\d/g) || []).length;
+        // Header-first barcode/code detection. Explicitly labelled identifier columns
+        // always take priority; numeric-content scoring is only a fallback when no
+        // BARCODE/CODE-style header exists in this worksheet. Price/cost columns are
+        // excluded in both paths so prices can never become accidental barcodes.
+        const priceOrNonCodeHeader = /\b(price|cost|msrp|retail|value|amount|qty|quantity|stock|date|time|phone|zip|postal|row)\b|item\s*(name|description)|product\s*name/i;
+        const explicitCodeHeader = /barcode|\bcode\b|\b(upc|ean|gtin|sku)\b|item[ _-]*(no|number|code)|product[ _-]*code|part[ _-]*(no|number|code)/i;
+        const labelledCodeHeaders = ws.headers.filter(h =>
+          !h.isFflz && !priceOrNonCodeHeader.test(String(h.name || '')) &&
+          (h.isFullUpc || explicitCodeHeader.test(String(h.name || '')))
+        );
+        let headersToIndex = labelledCodeHeaders;
+        if (!headersToIndex.length) {
+          let detectedCodeHeader = null, detectedCodeScore = -1;
+          ws.headers.forEach(h => {
+            if (h.isFflz || h.isFullUpc || priceOrNonCodeHeader.test(String(h.name || ''))) return;
+            let digits = 0, populated = 0;
+            ws.records.forEach(rec => {
+              const raw = h.colIndex === ws.fullUpcColIndex
+                ? (rec.currentFullUpcValue ?? '')
+                : (rec.cells?.[h.colIndex]?.value ?? '');
+              const value = String(raw).trim();
+              if (!value) return;
+              populated++;
+              digits += (value.match(/\d/g) || []).length;
+            });
+            if (populated && digits > detectedCodeScore) {
+              detectedCodeScore = digits;
+              detectedCodeHeader = h;
+            }
           });
-          const hint = /barcode|upc|ean|gtin|code|sku|item\s*no|part|id/i.test(String(h.name || '')) ? 2 : 0;
-          const score = digits * 1000 + hint;
-          if (populated && score > detectedCodeScore) { detectedCodeScore = score; detectedCodeHeader = h; }
-        });
-        const headersToIndex = detectedCodeHeader ? [detectedCodeHeader] : [];
+          headersToIndex = detectedCodeHeader ? [detectedCodeHeader] : [];
+        }
 
         let nameHeader = null, bestNameScore = -1;
         const nameExcluded = /barcode|\b(upc|ean|sku|code|qty|quantity|stock|fflz|price|cost|amount|date|time|phone|zip|postal|row|id)\b/i;
