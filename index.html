@@ -753,6 +753,17 @@ body {
       .uis-app-header .header-menu-button, .uis-app-header .header-action { transition:none !important; }
     }
 
+
+    /* Multiple imported workbook tabs: horizontally scrollable on phone and desktop. */
+    #workbook-file-tabs { display:none; position:sticky; top:68px; z-index:25; background:rgba(8,15,21,.94); border-bottom:1px solid rgba(148,163,184,.14); backdrop-filter:blur(18px); }
+    #workbook-file-tabs.has-files { display:block; }
+    #workbook-file-tabs .workbook-tab-strip { display:flex; align-items:center; gap:7px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; padding:8px 12px; scrollbar-width:thin; -webkit-overflow-scrolling:touch; }
+    #workbook-file-tabs .workbook-tab { flex:0 0 auto; max-width:min(72vw,260px); display:inline-flex; align-items:center; gap:8px; border:1px solid rgba(148,163,184,.18); border-radius:999px; padding:8px 13px; color:#a9bac4; background:rgba(255,255,255,.035); font-size:11px; font-weight:650; }
+    #workbook-file-tabs .workbook-tab.active { color:#061b17; background:#55dfb8; border-color:#55dfb8; }
+    #workbook-file-tabs .workbook-tab .tab-name { overflow:hidden; text-overflow:ellipsis; }
+    #workbook-file-tabs .workbook-tab .tab-edited { font-size:9px; opacity:.75; }
+    #workbook-file-tabs .workbook-tab-add { flex:0 0 auto; display:inline-flex; align-items:center; gap:6px; border:1px dashed rgba(85,223,184,.45); border-radius:999px; padding:8px 12px; color:#7ee8c8; font-size:11px; font-weight:650; }
+    @media(max-width:640px) { #workbook-file-tabs { top:60px; } #workbook-file-tabs .workbook-tab-strip { padding:7px 9px; } #workbook-file-tabs .workbook-tab { max-width:68vw; padding:8px 11px; } }
   </style>
   <style id="uis-auth-gate-styles">
     body.uis-auth-locked { overflow: hidden !important; }
@@ -801,7 +812,7 @@ body {
   </div>
 
   <!-- Hidden File Input -->
-  <input id="file-upload-input" type="file" accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12" class="hidden" />
+  <input id="file-upload-input" type="file" multiple accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12" class="hidden" />
 
   <!-- ====================================================================== -->
   <!-- SLIDE-OVER SIDEBAR DRAWER (CHATGPT MOBILE 2026 OFF-CANVAS MENU) -->
@@ -915,6 +926,11 @@ body {
       </button>
     </div>
   </header>
+
+  <!-- Horizontally scrollable tabs for every imported Excel workbook. -->
+  <nav id="workbook-file-tabs" aria-label="Imported workbook files">
+    <div class="workbook-tab-strip" id="workbook-tab-strip"></div>
+  </nav>
 
   <!-- Error Banner -->
   <div id="error-banner" role="alert" aria-live="assertive" class="hidden bg-rose-950/90 border-b border-rose-500/40 px-4 py-2.5 flex items-center justify-between">
@@ -2916,6 +2932,8 @@ body {
         return { sheetCount: sheets.length, totalRecords, invalidQuantities, duplicateHeaders, missingQuantityColumns, duplicateIdentifiers, warnings };
       },
       workbook: null,
+      openWorkbooks: [],
+      activeWorkbookTabIndex: 0,
       headerRowOverrides: {},
       codeIndex: new Map(),
       activeSheetIdx: 0,
@@ -3003,6 +3021,8 @@ body {
         }
         this.installGlobalUXHandlers();
         this.workbook = null;
+        this.openWorkbooks = [];
+        this.activeWorkbookTabIndex = 0;
         this.headerRowOverrides = {};
         this.rebuildIndex();
         this.renderAll();
@@ -3097,9 +3117,10 @@ body {
                 return false;
               }
               if (status) status.textContent = 'Saving locally…';
+              this.captureActiveWorkbookSession();
               const snapshot = {
-                id: 'latest', schemaVersion: 5, savedAt: Date.now(), filename: workbookForSnapshot.filename || 'workbook.xlsx',
-                workbook: workbookForSnapshot, auditLogs: this.auditLogs || [], activityLogs: this.activityLogs || [], sales: this.sales || [],
+                id: 'latest', schemaVersion: 6, savedAt: Date.now(), filename: workbookForSnapshot.filename || 'workbook.xlsx',
+                workbook: workbookForSnapshot, workbooks: (this.openWorkbooks?.length ? this.openWorkbooks : [workbookForSnapshot]), activeWorkbookTabIndex: Math.max(0, Number(this.activeWorkbookTabIndex) || 0), auditLogs: this.auditLogs || [], activityLogs: this.activityLogs || [], sales: this.sales || [],
                 headerRowOverrides: this.headerRowOverrides || {}, activeSheetIdx: this.activeSheetIdx || 0,
                 activeView: this.activeView || 'scanner', pendingExportChanges: !!this._pendingExportChanges,
                 lastWorkbookExportAt: this._lastWorkbookExportAt || 0,
@@ -3138,7 +3159,7 @@ body {
                 request.onsuccess = () => resolve(request.result || null);
                 request.onerror = () => reject(request.error || new Error('Could not verify local recovery snapshot'));
               });
-              if (!verified || verified.schemaVersion !== 5 || !verified.workbook?.originalBuffer ||
+              if (!verified || verified.schemaVersion !== 6 || !verified.workbook?.originalBuffer ||
                   !Array.isArray(verified.workbook.worksheets) || verified.savedAt !== snapshot.savedAt) {
                 throw new Error('Local recovery write could not be verified. Your latest changes are not confirmed saved.');
               }
@@ -3203,8 +3224,14 @@ body {
             if (candidates.some(Boolean)) console.warn('UIS recovery snapshots failed structural validation.');
             return;
           }
-          this.workbook = snapshot.workbook;
+          this.openWorkbooks = Array.isArray(snapshot.workbooks) && snapshot.workbooks.length
+            ? snapshot.workbooks.filter(wb => wb?.originalBuffer && Array.isArray(wb.worksheets))
+            : [snapshot.workbook];
+          if (!this.openWorkbooks.length) this.openWorkbooks = [snapshot.workbook];
+          this.activeWorkbookTabIndex = Math.min(Math.max(0, Number(snapshot.activeWorkbookTabIndex) || 0), this.openWorkbooks.length - 1);
+          this.workbook = this.openWorkbooks[this.activeWorkbookTabIndex] || snapshot.workbook;
           this.auditLogs = Array.isArray(snapshot.auditLogs) ? snapshot.auditLogs : [];
+          if (this.workbook && !this.workbook._uisSession) this.workbook._uisSession = { auditLogs: this.auditLogs, sales: snapshot.sales || [], headerRowOverrides: snapshot.headerRowOverrides || {}, activeSheetIdx: snapshot.activeSheetIdx || 0, pendingExportChanges: snapshot.pendingExportChanges === true, lastWorkbookExportAt: snapshot.lastWorkbookExportAt || 0 };
           this.activityLogs = Array.isArray(snapshot.activityLogs) ? snapshot.activityLogs : [];
           this.sales = Array.isArray(snapshot.sales) ? snapshot.sales : [];
           this.posLastReceipt = snapshot.posLastReceipt || null;
@@ -3271,6 +3298,9 @@ body {
       restoreEditSnapshot(snapshot) {
         if (!snapshot?.workbook) return;
         this.workbook = snapshot.workbook;
+        if (!Array.isArray(this.openWorkbooks)) this.openWorkbooks = [];
+        if (this.openWorkbooks.length) this.openWorkbooks[this.activeWorkbookTabIndex] = this.workbook;
+        else this.openWorkbooks = [this.workbook];
         this.auditLogs = snapshot.auditLogs || [];
         this.activeSheetIdx = Math.min(snapshot.activeSheetIdx || 0, Math.max(0, this.workbook.worksheets.length - 1));
         this._gridSearchIndexedWorkbook = null; this._gridSearchCache = null; this._gridSearchMatchedRows = null;
@@ -3440,11 +3470,16 @@ body {
           return value;
         };
         const payload = {
-          format: 'UIS_BACKUP', version: 3, schemaVersion: 3, app: 'Universal Inventory System', createdAt: new Date().toISOString(),
+          format: 'UIS_BACKUP', version: 4, schemaVersion: 4, app: 'Universal Inventory System', createdAt: new Date().toISOString(),
           workbook: JSON.parse(JSON.stringify(this.workbook, (key, value) => {
             if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return encodeBuffer(value);
             return value;
           })),
+          workbooks: (this.openWorkbooks?.length ? this.openWorkbooks : [this.workbook]).map(wb => JSON.parse(JSON.stringify(wb, (key, value) => {
+            if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return encodeBuffer(value);
+            return value;
+          }))),
+          activeWorkbookTabIndex: this.activeWorkbookTabIndex || 0,
           auditLogs: this.auditLogs || [], activityLogs: this.activityLogs || [], sales: this.sales || [], headerRowOverrides: this.headerRowOverrides || {},
           activeSheetIdx: this.activeSheetIdx, activeView: this.activeView,
           pendingExportChanges: !!this._pendingExportChanges, lastWorkbookExportAt: this._lastWorkbookExportAt || 0
@@ -3461,7 +3496,7 @@ body {
       },
 
       validateBackupPayload(payload) {
-        if (!payload || payload.format !== 'UIS_BACKUP' || ![1, 2, 3].includes(payload.version) ||
+        if (!payload || payload.format !== 'UIS_BACKUP' || ![1, 2, 3, 4].includes(payload.version) ||
             !payload.workbook || !Array.isArray(payload.workbook.worksheets) ||
             payload.workbook.worksheets.length < 1 || payload.workbook.worksheets.length > 500) {
           throw new Error('This is not a supported UIS backup or its workbook structure is invalid.');
@@ -3539,7 +3574,12 @@ body {
           if (!(restored.originalBuffer instanceof ArrayBuffer) || !(restored.workingBuffer instanceof ArrayBuffer)) {
             throw new Error('Backup workbook binary data could not be restored.');
           }
-          this.workbook = restored;
+          const reviveWorkbooks = Array.isArray(payload.workbooks) && payload.workbooks.length
+            ? payload.workbooks.map(wb => revive(wb)).filter(wb => wb?.originalBuffer instanceof ArrayBuffer && Array.isArray(wb.worksheets))
+            : [restored];
+          this.openWorkbooks = reviveWorkbooks.length ? reviveWorkbooks : [restored];
+          this.activeWorkbookTabIndex = Math.min(Math.max(0, Number(payload.activeWorkbookTabIndex) || 0), this.openWorkbooks.length - 1);
+          this.workbook = this.openWorkbooks[this.activeWorkbookTabIndex] || restored;
           this.auditLogs = Array.isArray(payload.auditLogs) ? payload.auditLogs : [];
           this.activityLogs = Array.isArray(payload.activityLogs) ? payload.activityLogs.slice(0, 20000) : [];
           this.sales = Array.isArray(payload.sales) ? payload.sales.slice(0, 50000) : [];
@@ -3548,6 +3588,7 @@ body {
           this.headerRowOverrides = payload.headerRowOverrides || {};
           this.activeSheetIdx = Math.min(Math.max(0, Number(payload.activeSheetIdx) || 0), Math.max(0, restored.worksheets.length - 1));
           this.activeView = typeof payload.activeView === 'string' ? payload.activeView : 'insights';
+          if (this.workbook) this.workbook._uisSession = { auditLogs: this.auditLogs, sales: this.sales, headerRowOverrides: this.headerRowOverrides, activeSheetIdx: this.activeSheetIdx, pendingExportChanges: this._pendingExportChanges, lastWorkbookExportAt: this._lastWorkbookExportAt };
           this.undoStack = []; this.redoStack = [];
           this._gridSearchIndexedWorkbook = null; this._gridSearchCache = null; this._gridSearchMatchedRows = null;
           this.rebuildIndex();
@@ -4753,10 +4794,18 @@ body {
       },
 
       async handleFileUpload(e) {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        e.target.value = '';
+        const files = Array.from(e.target.files || []);
+        if (e.target) e.target.value = '';
+        if (!files.length) return;
+        if (files.length + (this.openWorkbooks?.length || (this.workbook ? 1 : 0)) > 20) {
+          this.showErrorBanner('UIS supports up to 20 open workbooks at a time. Export or close this session before importing more files.');
+          return;
+        }
+        for (const file of files) await this.handleSingleWorkbookUpload(file);
+      },
 
+      async handleSingleWorkbookUpload(file) {
+        if (!file) return;
         if (!file.name.toLowerCase().endsWith('.xlsx') && !file.name.toLowerCase().endsWith('.xlsm')) {
           this.showErrorBanner(`Unsupported file type: ${file.name}. Choose an Excel .xlsx or .xlsm workbook.`);
           return;
@@ -4804,6 +4853,11 @@ body {
               return;
             }
           }
+          if (!Array.isArray(this.openWorkbooks)) this.openWorkbooks = [];
+          this.captureActiveWorkbookSession();
+          if (this.workbook && !this.openWorkbooks.includes(this.workbook)) this.openWorkbooks.push(this.workbook);
+          this.openWorkbooks.push(inspected);
+          this.activeWorkbookTabIndex = this.openWorkbooks.length - 1;
           this.workbook = inspected;
           this.sales = []; this.posCart = []; this.posLastReceipt = null;
           this._gridSearchIndexedWorkbook = null; this._gridSearchCache = null; this._gridSearchMatchedRows = null;
@@ -4811,6 +4865,7 @@ body {
           this.auditLogs = [...(inspected.initialAuditLogs || [])];
           this._pendingExportChanges = false;
           this.activeSheetIdx = 0;
+          inspected._uisSession = { auditLogs: this.auditLogs, sales: [], headerRowOverrides: {}, activeSheetIdx: 0, pendingExportChanges: false, lastWorkbookExportAt: 0 };
           this.integrityReport = null;
           this.lastScanResult = null;
           this.notFoundPrompt = null;
@@ -5946,7 +6001,9 @@ handleSetScannedItemQty(rawAddedQty) {
             });
           });
 
+          reInspected._uisSession = this.workbook?._uisSession || { auditLogs: this.auditLogs || [], sales: this.sales || [], headerRowOverrides: this.headerRowOverrides || {}, activeSheetIdx: this.activeSheetIdx || 0, pendingExportChanges: !!this._pendingExportChanges, lastWorkbookExportAt: this._lastWorkbookExportAt || 0 };
           this.workbook = reInspected;
+          if (Array.isArray(this.openWorkbooks) && this.openWorkbooks.length) this.openWorkbooks[this.activeWorkbookTabIndex] = reInspected;
           this._gridSearchIndexedWorkbook = null; this._gridSearchCache = null; this._gridSearchMatchedRows = null;
           this.recordActivity('HEADER_ROW_CHANGED', { sheetName: activeSheet.sheetName, previousValue: activeSheet.headerRowNum || '?', newValue: parsedRow, details: 'Worksheet header row re-detected and updated.' });
           this.auditLogs.unshift({
@@ -6070,7 +6127,74 @@ handleSetScannedItemQty(rawAddedQty) {
       // ======================================================================
       // UI RENDERING METHODS (CHATGPT MOBILE 2026 DESIGN)
       // ======================================================================
+      captureActiveWorkbookSession() {
+        if (!this.workbook) return;
+        this.workbook._uisSession = {
+          auditLogs: this.auditLogs || [],
+          sales: this.sales || [],
+          headerRowOverrides: this.headerRowOverrides || {},
+          activeSheetIdx: this.activeSheetIdx || 0,
+          pendingExportChanges: !!this._pendingExportChanges,
+          lastWorkbookExportAt: this._lastWorkbookExportAt || 0
+        };
+      },
+
+      restoreActiveWorkbookSession(workbook) {
+        const session = workbook?._uisSession || {};
+        this.auditLogs = Array.isArray(session.auditLogs) ? session.auditLogs : [...(workbook?.initialAuditLogs || [])];
+        this.sales = Array.isArray(session.sales) ? session.sales : [];
+        this.headerRowOverrides = session.headerRowOverrides && typeof session.headerRowOverrides === 'object' ? session.headerRowOverrides : {};
+        this.activeSheetIdx = Math.min(Math.max(0, Number(session.activeSheetIdx) || 0), Math.max(0, (workbook?.worksheets?.length || 1) - 1));
+        this._pendingExportChanges = session.pendingExportChanges === true || (!!workbook?.worksheets?.some(ws => ws.records.some(r => r.isModified || r.isFullUpcModified || r.isNewRow) || ws.fflzHeaderRenamed));
+        this._lastWorkbookExportAt = Number(session.lastWorkbookExportAt) || 0;
+      },
+
+      renderWorkbookTabs() {
+        const nav = document.getElementById('workbook-file-tabs');
+        const strip = document.getElementById('workbook-tab-strip');
+        if (!nav || !strip) return;
+        const books = Array.isArray(this.openWorkbooks) ? this.openWorkbooks : [];
+        nav.classList.toggle('has-files', books.length > 0);
+        if (!books.length) { strip.innerHTML = ''; return; }
+        strip.innerHTML = books.map((wb, idx) => {
+          const active = idx === this.activeWorkbookTabIndex;
+          const edited = wb?.worksheets?.reduce((sum, ws) => sum + (ws.records || []).filter(r => r.isModified || r.isFullUpcModified || r.isNewRow).length, 0) || 0;
+          const name = String(wb?.filename || `Workbook ${idx + 1}`);
+          return `<button type="button" class="workbook-tab ${active ? 'active' : ''}" onclick="app.switchWorkbookTab(${idx})" title="${escapeHtml(name)}" aria-current="${active ? 'page' : 'false'}"><i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 shrink-0"></i><span class="tab-name">${escapeHtml(name)}</span>${edited ? `<span class="tab-edited">${edited} edited</span>` : ''}</button>`;
+        }).join('') + `<button type="button" class="workbook-tab-add" onclick="document.getElementById('file-upload-input').click()"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Add files</button>`;
+        if (window.lucide) lucide.createIcons();
+      },
+
+      async switchWorkbookTab(index) {
+        const targetIndex = Number(index);
+        if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= (this.openWorkbooks?.length || 0) || targetIndex === this.activeWorkbookTabIndex) return;
+        try {
+          this.captureActiveWorkbookSession();
+          if (this.workbook?.originalBuffer && (this._workspaceDirty || this._workspaceSaveTimer || this._workspaceSaveInFlight)) {
+            const saved = await this.flushWorkspaceSave();
+            if (!saved) throw new Error('The current workbook could not be confirmed saved.');
+          }
+          this.activeWorkbookTabIndex = targetIndex;
+          this.workbook = this.openWorkbooks[targetIndex];
+          this.restoreActiveWorkbookSession(this.workbook);
+          this.searchQuery = '';
+          this.filterModifiedOnly = false;
+          this.posCart = [];
+          this.posLastReceipt = null;
+          this.undoStack = [];
+          this.redoStack = [];
+          this._gridSearchIndexedWorkbook = null; this._gridSearchCache = null; this._gridSearchMatchedRows = null;
+          this.activeView = 'workspace';
+          this.rebuildIndex();
+          this.renderAll();
+          this.scheduleWorkspaceSave();
+        } catch (error) {
+          this.showToast(`Could not switch workbook: ${error.message}`, 'error');
+        }
+      },
+
       renderAll() {
+        this.renderWorkbookTabs();
         const scannerStage = document.getElementById('scanner-home-stage');
         const secondaryStage = document.getElementById('secondary-view-stage');
         const topPillTitle = document.getElementById('top-pill-title');
@@ -7084,6 +7208,8 @@ handleSetScannedItemQty(rawAddedQty) {
 
       resetInventorySessionState() {
         this.workbook = null;
+        this.openWorkbooks = [];
+        this.activeWorkbookTabIndex = 0;
         this.headerRowOverrides = {};
         this.auditLogs = [];
         this.activityLogs = [];
