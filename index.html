@@ -4914,8 +4914,13 @@ body {
       },
 
       async closeScanResultAndResumeCamera() {
-        const shouldResume = !!this._resumeCameraAfterScan;
+        // Closing an inventory result must NEVER restart the camera. The inventory
+        // camera is hold-to-scan only: a fresh pointer-down on the floating orb is
+        // required for every new scan session.
         this._resumeCameraAfterScan = false;
+        if (this._scanPurpose === 'inventory' && (this._inventoryHoldActive || this.isScannerOpen || this._scanStream || this._scanRaf)) {
+          await this.endMainInventoryHoldScan();
+        }
         this.lastScanResult = null;
         this.notFoundPrompt = null;
         this.disambiguationModal = null;
@@ -4923,11 +4928,8 @@ body {
         if (scanModal) { scanModal.classList.add('hidden'); scanModal.innerHTML = ''; }
         this.renderDisambiguationModal();
         this.renderAll();
-        if (shouldResume) await this.startCameraScanner();
-        else {
-          const input = document.getElementById('manual-barcode-input');
-          if (input) input.focus();
-        }
+        const input = document.getElementById('manual-barcode-input');
+        if (input) input.focus();
       },
 
       getScannedItemDetails() {
@@ -4977,7 +4979,7 @@ body {
                   <button type="button" onclick="app.applyScanPopupQuantity(1)" class="rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 py-3 font-semibold text-sm"><i data-lucide="plus" class="inline w-4 h-4 mr-1"></i>+ Quantity</button>
                 </div>
               </div>
-              <div class="flex justify-end pt-1"><button type="button" onclick="app.closeScanResultAndResumeCamera()" class="rounded-xl border border-white/15 px-5 py-2.5 text-sm text-slate-300 hover:bg-white/10">Close & Resume Scanner</button></div>
+              <div class="flex justify-end pt-1"><button type="button" onclick="app.closeScanResultAndResumeCamera()" class="rounded-xl border border-white/15 px-5 py-2.5 text-sm text-slate-300 hover:bg-white/10">Close</button></div>
             </div>
           </div>`;
         modal.classList.remove('hidden');
