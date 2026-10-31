@@ -2349,14 +2349,64 @@ body {
         try { return window.UISAuth?.getCurrentUser?.() || 'Unknown / unsigned session'; }
         catch (_) { return 'Unknown / unsigned session'; }
       },
+      detectItemNameColumn(sheet) {
+        if (!sheet || !Array.isArray(sheet.headers) || !Array.isArray(sheet.records)) return -1;
+        const cacheKey = `${sheet.records.length}|${sheet.headers.map(h => String(h?.name || '')).join('|')}`;
+        if (sheet._uisItemNameColumnCache?.key === cacheKey) return sheet._uisItemNameColumnCache.index;
+        const excluded = /barcode|\b(upc|ean|sku|code|qty|quantity|stock|fflz|price|cost|amount|date|time|phone|zip|postal|row|id)\b/i;
+        let bestIndex = -1, bestScore = 0;
+        sheet.headers.forEach((header, colIndex) => {
+          const label = String(header?.name || '');
+          if (header?.isFflz || header?.isFullUpc || excluded.test(label)) return;
+          let letters = 0, words = 0, populated = 0;
+          for (const record of sheet.records) {
+            const value = String(record?.cells?.[colIndex]?.value ?? '').trim();
+            if (!value || !/[A-Za-z\u00C0-\u024F]/.test(value)) continue;
+            const alphaCount = (value.match(/[A-Za-z\u00C0-\u024F]/g) || []).length;
+            const wordCount = (value.match(/[A-Za-z\u00C0-\u024F0-9]+/g) || []).length;
+            letters += alphaCount; words += wordCount; populated++;
+          }
+          if (!populated) return;
+          const nameHint = /item|product|description|material|article|part|name/i.test(label) ? 1.12 : 1;
+          const score = (letters + words * 4) * nameHint;
+          if (score > bestScore) { bestScore = score; bestIndex = colIndex; }
+        });
+        sheet._uisItemNameColumnCache = { key: cacheKey, index: bestIndex };
+        return bestIndex;
+      },
+      getItemNameForRecord(sheet, record) {
+        if (!sheet || !record) return '';
+        const nameCol = this.detectItemNameColumn(sheet);
+        const value = nameCol >= 0 ? String(record.cells?.[nameCol]?.value ?? '').trim() : '';
+        return value || String(record.itemName || '').trim();
+      },
+      openActivityLocation(sheetIdx, rowNumber) {
+        if (!this.workbook || sheetIdx === '' || rowNumber === '' || rowNumber === null || rowNumber === undefined) return;
+        const idx = Number(sheetIdx), rowNum = Number(rowNumber), sheet = this.workbook.worksheets[idx];
+        if (!sheet || !Number.isFinite(rowNum)) { this.showToast('The original worksheet row could not be located.', 'error'); return; }
+        const rowIndex = sheet.records.findIndex(rec => Number(rec.rowNumber) === rowNum);
+        if (rowIndex < 0) { this.showToast(`Could not locate row ${rowNum} in "${sheet.sheetName}".`, 'error'); return; }
+        this.activeSheetIdx = idx; this.activeView = 'workspace'; this.searchQuery = ''; this.filterModifiedOnly = false; this.activityFocusLocation = { sheetIdx: idx, rowNumber: rowNum };
+        this.gridScrollTop = Math.max(0, (rowIndex - 4) * this.gridRowHeight * (this.gridZoom || 1));
+        this.gridStartIndex = Math.max(0, Math.floor(this.gridScrollTop / (this.gridRowHeight * (this.gridZoom || 1))) - (this.gridOverscan || 10));
+        this.toggleSidebarDrawer(false); this.renderAll();
+        requestAnimationFrame(() => { const scroller = document.getElementById('virtual-worksheet-scroll'); if (scroller) scroller.scrollTop = this.gridScrollTop; });
+      },
       recordActivity(action, details = {}, options = {}) {
+        const targetSheetIdx = details.sheetIdx !== undefined && details.sheetIdx !== '' ? Number(details.sheetIdx) :
+          (details.sheetName && this.workbook?.worksheets ? this.workbook.worksheets.findIndex(ws => ws.sheetName === details.sheetName) : -1);
+        const targetSheet = targetSheetIdx >= 0 ? this.workbook?.worksheets?.[targetSheetIdx] : null;
+        const targetRecord = targetSheet && details.rowNumber !== undefined && details.rowNumber !== ''
+          ? targetSheet.records?.find(rec => Number(rec.rowNumber) === Number(details.rowNumber)) : null;
+        const detectedName = this.getItemNameForRecord(targetSheet, targetRecord) || details.itemName;
         const event = {
           id: `activity-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
           timestamp: new Date().toISOString(),
           actor: this.getCurrentActor(),
           action: String(action || 'INVENTORY_CHANGE').slice(0, 100),
           category: options.category || 'inventory',
-          itemName: String(details.itemName || '').slice(0, 180),
+          itemName: String(detectedName || '').slice(0, 180),
+          sheetIdx: targetSheetIdx >= 0 ? targetSheetIdx : '',
           barcode: String(details.barcode || '').slice(0, 120),
           sheetName: String(details.sheetName || '').slice(0, 120),
           rowNumber: details.rowNumber ?? '',
@@ -2383,9 +2433,9 @@ body {
         if (next) { next.focus(); try { next.setSelectionRange(caret, caret); } catch (_) {} }
       },
       exportActivityLog() {
-        const rows = (this.activityLogs || []).map(e => [e.timestamp, e.actor, e.action, e.itemName, e.barcode, e.sheetName, e.rowNumber, e.previousValue, e.newValue, e.quantityChange, e.reference, e.details]);
+        const rows = (this.activityLogs || []).map(e => [e.itemName, e.action, e.timestamp, e.actor, e.sheetName, e.rowNumber, e.barcode, e.previousValue, e.newValue, e.quantityChange, e.reference, e.details]);
         if (!rows.length) { this.showToast('There is no activity history to export yet.', 'error'); return; }
-        this.downloadCsv('UIS_Company_Activity_Log.csv', ['Timestamp','User','Action','Item','Barcode','Worksheet','Row','Previous Value','New Value','Quantity Change','Reference','Details'], rows);
+        this.downloadCsv('UIS_Company_Activity_Log.csv', ['What / Item','Action','When','Who','Worksheet','Row','Barcode','Previous Value','New Value','Quantity Change','Reference','Details'], rows);
         this.recordActivity('ACTIVITY_LOG_EXPORTED', { details: 'Company activity log exported to a local CSV file.' }, { category: 'system', affectsWorkbook: false });
         this.showToast('Company activity log exported.');
       },
@@ -5507,8 +5557,11 @@ handleSetScannedItemQty(rawAddedQty) {
             !this.lastScanResult.notFound &&
             this.lastScanResult.sheetIdx === this.activeSheetIdx &&
             this.lastScanResult.rowNumber === rec.rowNumber;
+          const isActivityFocusRow = this.activityFocusLocation && this.activityFocusLocation.sheetIdx === this.activeSheetIdx && Number(this.activityFocusLocation.rowNumber) === Number(rec.rowNumber);
 
-          const rowClass = isLastScannedRow
+          const rowClass = isActivityFocusRow
+            ? 'bg-amber-400/20 ring-2 ring-inset ring-amber-300/70'
+            : isLastScannedRow
             ? 'bg-emerald-500/15 ring-1 ring-inset ring-emerald-400/50'
             : rec.isModified || rec.isFullUpcModified
             ? 'bg-amber-500/[0.04] hover:bg-amber-500/[0.08]'
@@ -5916,11 +5969,25 @@ handleSetScannedItemQty(rawAddedQty) {
         const filtered = q ? all.filter(e => [e.actor,e.action,e.itemName,e.barcode,e.sheetName,e.details,e.reference].join(' ').toLowerCase().includes(q)) : all;
         const shown = filtered.slice(0, 1000);
         const fmt = value => value ? new Date(value).toLocaleString() : '—';
+        const itemLabelFor = e => {
+          const idx = e.sheetIdx !== '' && e.sheetIdx !== undefined ? Number(e.sheetIdx) :
+            (e.sheetName && this.workbook?.worksheets ? this.workbook.worksheets.findIndex(ws => ws.sheetName === e.sheetName) : -1);
+          const sheet = idx >= 0 ? this.workbook?.worksheets?.[idx] : null;
+          const record = sheet && e.rowNumber !== '' ? sheet.records?.find(rec => Number(rec.rowNumber) === Number(e.rowNumber)) : null;
+          return this.getItemNameForRecord(sheet, record) || e.itemName || (e.category === 'session' ? 'User session' : e.category === 'system' ? 'Workspace activity' : 'Inventory record');
+        };
+        const locationFor = e => {
+          let idx = e.sheetIdx !== '' && e.sheetIdx !== undefined ? Number(e.sheetIdx) :
+            (e.sheetName && this.workbook?.worksheets ? this.workbook.worksheets.findIndex(ws => ws.sheetName === e.sheetName) : -1);
+          const hasRow = e.rowNumber !== '' && e.rowNumber !== null && e.rowNumber !== undefined && Number.isFinite(Number(e.rowNumber));
+          if (idx < 0 || !hasRow || !this.workbook?.worksheets?.[idx]) return `<span class="text-neutral-500">${escapeHtml(e.sheetName || 'Workspace')} ${hasRow ? `· Row ${escapeHtml(e.rowNumber)}` : ''}</span>`;
+          return `<button onclick="app.openActivityLocation(${idx},${Number(e.rowNumber)})" class="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-300 hover:bg-emerald-500/20"><i data-lucide="external-link" class="h-3 w-3"></i>${escapeHtml(e.sheetName)} · Row ${escapeHtml(e.rowNumber)} · Open row</button>`;
+        };
         container.innerHTML = `
           <section class="rounded-2xl border border-white/10 bg-[#171717] p-4 space-y-4">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div><h2 class="text-base font-bold text-white flex items-center gap-2"><i data-lucide="clipboard-list" class="w-5 h-5 text-emerald-400"></i> Company Activity Log</h2>
-                <p class="mt-1 text-xs text-neutral-400">Successful workspace changes recorded on this device. Each entry identifies the signed-in account and the affected inventory details.</p></div>
+                <p class="mt-1 text-xs text-neutral-400">Every entry is organized as What changed, When it happened, and Who made the change. Open a linked worksheet row to inspect the affected record.</p></div>
               <button onclick="app.exportActivityLog()" class="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white">Export activity CSV</button>
             </div>
             <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
@@ -5930,8 +5997,9 @@ handleSetScannedItemQty(rawAddedQty) {
             </div>
             <input type="search" value="${escapeHtml(this.activitySearchQuery)}" oninput="app.filterActivityLog(this.value)" placeholder="Search user, action, item, barcode, worksheet…" class="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-xs text-white outline-none focus:border-emerald-500/50" />
             <div class="text-[10px] text-neutral-500">Showing ${shown.length.toLocaleString()} of ${filtered.length.toLocaleString()} matching events. The log is stored locally with the company workspace and included in manual backups.</div>
-            ${shown.length ? `<div class="overflow-auto rounded-xl border border-white/10"><table class="w-full min-w-[900px] text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-3">When</th><th class="p-3">Who</th><th class="p-3">Action</th><th class="p-3">Item / Worksheet</th><th class="p-3">Before</th><th class="p-3">After</th><th class="p-3">Details</th></tr></thead><tbody>${shown.map(e=>`<tr class="border-t border-white/5 align-top hover:bg-white/[.025]"><td class="p-3 whitespace-nowrap font-mono text-neutral-400">${escapeHtml(fmt(e.timestamp))}</td><td class="p-3 font-semibold text-emerald-300">${escapeHtml(e.actor || 'Unknown')}</td><td class="p-3"><span class="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[10px]">${escapeHtml(e.action)}</span></td><td class="p-3 text-white">${escapeHtml(e.itemName || '—')}<div class="mt-1 text-[10px] text-neutral-500">${escapeHtml(e.sheetName || '')}${e.rowNumber!==''?` · Row ${escapeHtml(e.rowNumber)}`:''}${e.barcode?` · ${escapeHtml(e.barcode)}`:''}</div></td><td class="p-3 font-mono text-neutral-400">${escapeHtml(e.previousValue ?? '—')}</td><td class="p-3 font-mono text-white">${escapeHtml(e.newValue ?? '—')}</td><td class="p-3 max-w-sm whitespace-normal text-neutral-400">${escapeHtml(e.details || '')}${e.reference?`<div class="mt-1 text-[10px] text-neutral-500">Ref: ${escapeHtml(e.reference)}</div>`:''}${e.quantityChange!==''?`<div class="mt-1 text-[10px] text-emerald-300">Qty change: ${Number(e.quantityChange)>0?'+':''}${escapeHtml(e.quantityChange)}</div>`:''}</td></tr>`).join('')}</tbody></table></div>` : `<div class="rounded-xl border border-dashed border-white/10 py-12 text-center text-sm text-neutral-500">${all.length ? 'No activity matches that search.' : 'No successful inventory changes have been recorded yet.'}</div>`}
+            ${shown.length ? `<div class="overflow-auto rounded-xl border border-white/10"><table class="w-full min-w-[980px] text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-3">What changed</th><th class="p-3">When</th><th class="p-3">Who</th><th class="p-3">Where · open record</th><th class="p-3">Change details</th></tr></thead><tbody>${shown.map(e=>`<tr class="border-t border-white/5 align-top hover:bg-white/[.025]"><td class="p-3 text-white"><div class="font-semibold">${escapeHtml(itemLabelFor(e))}</div><div class="mt-1"><span class="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[10px] text-neutral-300">${escapeHtml(String(e.action || '').replace(/_/g,' ').toLowerCase())}</span></div>${e.barcode?`<div class="mt-2 text-[10px] font-mono text-neutral-500">Barcode: ${escapeHtml(e.barcode)}</div>`:''}</td><td class="p-3 whitespace-nowrap font-mono text-neutral-400">${escapeHtml(fmt(e.timestamp))}</td><td class="p-3 whitespace-nowrap font-semibold text-emerald-300">${escapeHtml(e.actor || 'Unknown')}</td><td class="p-3">${locationFor(e)}</td><td class="p-3 max-w-sm whitespace-normal text-neutral-400">${e.previousValue!=='' && e.previousValue!==undefined ? `<div><span class="text-neutral-500">Before:</span> <span class="font-mono">${escapeHtml(e.previousValue)}</span></div>`:''}${e.newValue!=='' && e.newValue!==undefined ? `<div><span class="text-neutral-500">After:</span> <span class="font-mono text-white">${escapeHtml(e.newValue)}</span></div>`:''}${e.quantityChange!=='' && e.quantityChange!==undefined ? `<div class="mt-1 text-emerald-300">Qty change: ${Number(e.quantityChange)>0?'+':''}${escapeHtml(e.quantityChange)}</div>`:''}${e.details?`<div class="mt-1">${escapeHtml(e.details)}</div>`:''}${e.reference?`<div class="mt-1 text-[10px] text-neutral-500">Ref: ${escapeHtml(e.reference)}</div>`:''}</td></tr>`).join('')}</tbody></table></div>` : `<div class="rounded-xl border border-dashed border-white/10 py-12 text-center text-sm text-neutral-500">${all.length ? 'No activity matches that search.' : 'No successful inventory changes have been recorded yet.'}</div>`}
           </section>`;
+        if (window.lucide) lucide.createIcons();
       },
 
       renderHistoryView(container) {
