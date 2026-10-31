@@ -1766,9 +1766,14 @@ body {
         const mappings = new Map();
         const movedSheets = [];
         for (const sheet of workbookState.worksheets || []) {
-          const defaults = (sheet.headers || []).map(h => Number(h.colIndex));
-          const order = Array.isArray(sheet.columnOrder) ? sheet.columnOrder.map(Number) : defaults;
-          if (!defaults.length || order.length !== defaults.length || defaults.some((v, i) => order[i] === v)) continue;
+          const defaults = (sheet.headers || []).map(h => Number(h.colIndex)).filter(Number.isFinite);
+          if (!defaults.length) continue;
+          // Normalize the saved order into a complete, duplicate-free permutation.
+          // A partial/stale saved order must never silently disable the physical move.
+          const candidate = Array.isArray(sheet.columnOrder) ? sheet.columnOrder.map(Number) : defaults;
+          const valid = candidate.filter((col, index) => defaults.includes(col) && candidate.indexOf(col) === index);
+          const order = [...valid, ...defaults.filter(col => !valid.includes(col))];
+          if (defaults.every((col, index) => order[index] === col)) continue;
           const map = new Map();
           order.forEach((oldCol, newPosition) => map.set(Number(oldCol), newPosition + 1));
           mappings.set(String(sheet.sheetName).toLowerCase(), map);
@@ -5725,7 +5730,16 @@ handleSetScannedItemQty(rawAddedQty) {
 
         this.clearErrorBanner();
         try {
-          const { exportedBuffer, integrityReport } = await OpenXmlSurgicalEngine.exportAndVerifyWorkbook(this.workbook);
+          // Freeze the exact order currently displayed in every worksheet into the
+          // export snapshot. This avoids exporting a stale/incomplete persisted order.
+          const exportWorkbookState = {
+            ...this.workbook,
+            worksheets: this.workbook.worksheets.map(sheet => ({
+              ...sheet,
+              columnOrder: this.getGridColumnOrder(sheet)
+            }))
+          };
+          const { exportedBuffer, integrityReport } = await OpenXmlSurgicalEngine.exportAndVerifyWorkbook(exportWorkbookState);
           this.integrityReport = integrityReport;
           if (!triggerDownload) {
             this.activeView = 'integrity';
