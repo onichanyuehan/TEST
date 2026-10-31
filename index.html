@@ -3154,7 +3154,29 @@ body {
           const headers = Array.isArray(sheet.headers) ? sheet.headers : [];
           const nameHeader = headers.find(h => /item|product|description|name/i.test(String(h.name || '')) && !h.isFflz && !h.isFullUpc);
           const codeHeaders = headers.filter(h => /barcode|\bcode\b|sku|upc|ean/i.test(String(h.name || '')) && !h.isFflz && !h.isFullUpc);
-          const priceHeader = headers.find(h => /^(selling\s*)?price$|unit\s*price|retail\s*price|sales\s*price/i.test(String(h.name || '').trim()) && !/cost|purchase|wholesale/i.test(String(h.name || '')));
+          // Prefer an explicit Price/SRP or SRP column, then ordinary selling-price headers.
+          // Exclude purchase/cost columns so POS never mistakes the inventory cost for the selling price.
+          const priceHeader = headers
+            .filter(h => {
+              const name = String(h.name || '').trim();
+              return /(?:price\s*\/\s*srp|srp\s*\/\s*price|\bsrp\b|^(?:selling\s*)?price$|unit\s*price|retail\s*price|sales\s*price)/i.test(name)
+                && !/cost|purchase|wholesale|buying/i.test(name);
+            })
+            .sort((a, b) => {
+              const rank = h => {
+                const name = String(h.name || '').trim();
+                if (/price\s*\/\s*srp|srp\s*\/\s*price/i.test(name)) return 0;
+                if (/\bsrp\b/i.test(name)) return 1;
+                if (/^(?:selling\s*)?price$/i.test(name)) return 2;
+                if (/unit\s*price/i.test(name)) return 3;
+                if (/retail\s*price/i.test(name)) return 4;
+                return 5;
+              };
+              return rank(a) - rank(b);
+            })[0];
+          const rawUnitPrice = priceHeader ? String(record.cells?.[priceHeader.colIndex]?.value ?? '').trim() : '';
+          const parsedUnitPrice = rawUnitPrice ? Number(rawUnitPrice.replace(/[^0-9.\-]/g, '')) : NaN;
+          const unitPrice = Number.isFinite(parsedUnitPrice) ? parsedUnitPrice : null;
           (sheet.records || []).forEach(record => {
             const rawQty = record.currentFflzValue === '' ? 0 : Number(record.currentFflzValue);
             const qty = Number.isFinite(rawQty) ? rawQty : null;
@@ -3162,7 +3184,7 @@ body {
             const codes = codeHeaders.map(h => String(record.cells?.[h.colIndex]?.value || '').trim()).filter(Boolean);
             const item = {
               sheetIdx, sheetName: sheet.sheetName, rowNumber: record.rowNumber,
-              itemName, qty, codes, unitPrice: priceHeader && String(record.cells?.[priceHeader.colIndex]?.value ?? '').trim() !== '' ? Number(String(record.cells?.[priceHeader.colIndex]?.value ?? '').replace(/[,₱$]/g, '').trim()) : null, priceColIndex: priceHeader?.colIndex ?? null, modified: !!(record.isModified || record.isFullUpcModified),
+              itemName, qty, codes, unitPrice, priceColIndex: priceHeader?.colIndex ?? null, modified: !!(record.isModified || record.isFullUpcModified),
               key: `${sheetIdx}:${record.rowNumber}`, sheet, record
             };
             item.label = `${item.itemName || 'Unnamed item'} · ${item.sheetName} · Row ${item.rowNumber}`;
