@@ -19,8 +19,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <!-- Lucide is used throughout the interface; pin it to a stable release. -->
-  <script src="https://unpkg.com/lucide@0.468.0"></script>
+  <!-- JSZip for Surgical OpenXML (.xlsx) In-Place Binary Manipulation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
 
   <script>
     tailwind.config = {
@@ -33,35 +36,6 @@
           }
         }
       }
-    };
-  </script>
-  <script>
-    // Load large feature libraries only when the user actually needs them.
-    // A shared promise prevents duplicate script downloads during batch imports.
-    window.__uisDependencyPromises = window.__uisDependencyPromises || Object.create(null);
-    window.ensureUISDependency = function(name) {
-      const definitions = {
-        jszip: { url: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js', ready: () => !!window.JSZip },
-        zxing: { url: 'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js', ready: () => !!window.ZXing }
-      };
-      const definition = definitions[name];
-      if (!definition) return Promise.reject(new Error('Unknown UIS dependency: ' + name));
-      if (definition.ready()) return Promise.resolve(true);
-      if (window.__uisDependencyPromises[name]) return window.__uisDependencyPromises[name];
-      window.__uisDependencyPromises[name] = new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = definition.url;
-        script.async = true;
-        script.onload = () => definition.ready()
-          ? resolve(true)
-          : reject(new Error(name + ' loaded but did not expose its expected API.'));
-        script.onerror = () => reject(new Error('Could not load ' + name + '. Check your internet connection and reload UIS.'));
-        document.head.appendChild(script);
-      }).catch(error => {
-        delete window.__uisDependencyPromises[name];
-        throw error;
-      });
-      return window.__uisDependencyPromises[name];
     };
   </script>
   <style id="uis-design-system">
@@ -796,21 +770,6 @@ body {
     #workbook-file-tabs .workbook-tab .tab-edited { font-size:9px; opacity:.75; }
     #workbook-file-tabs .workbook-tab-add { flex:0 0 auto; display:inline-flex; align-items:center; gap:6px; border:1px dashed rgba(85,223,184,.45); border-radius:999px; padding:8px 12px; color:#7ee8c8; font-size:11px; font-weight:650; }
     @media(max-width:640px) { #workbook-file-tabs { top:60px; } #workbook-file-tabs .workbook-tab-strip { padding:7px 9px; } #workbook-file-tabs .workbook-tab { max-width:68vw; padding:8px 11px; } }
-
-    /* Mobile interaction and scrolling refinements. */
-    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-    body { min-width: 320px; max-width: 100%; overflow-x: hidden; }
-    .overflow-x-auto { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
-    .overflow-y-auto { -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; }
-    button, [role="button"] { touch-action: manipulation; }
-    video, canvas, img { max-width: 100%; }
-    @media (max-width: 640px) {
-      input, select, textarea { scroll-margin-bottom: 24px; }
-      .modal, [role="dialog"] { max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px); }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
-    }
   </style>
   <style id="uis-auth-gate-styles">
     body.uis-auth-locked { overflow: hidden !important; }
@@ -1362,14 +1321,23 @@ body {
               ).trim()
             : '';
 
-          // Build row-detail fields only when a user opens a matching record.
-          // Eagerly allocating one object per cell for every indexed row caused
-          // avoidable memory growth on large multi-workbook workspaces.
-          const makeAllRowFields = () => ws.headers.map(h => {
+          const allRowFields = ws.headers.map(h => {
             const cellObj = rec.cells[h.colIndex];
-            const val = h.isFflz ? rec.currentFflzValue : h.isFullUpc ? rec.currentFullUpcValue : (cellObj?.value ?? '');
-            return { colIndex: h.colIndex, colLetter: h.colLetter, cellRef: `${h.colLetter}${rec.rowNumber}`, headerName: h.name,
-              value: String(val ?? '').trim(), formula: cellObj?.formula || null, isFflz: h.isFflz, isFullUpc: h.isFullUpc };
+            const val = h.isFflz
+              ? rec.currentFflzValue
+              : h.isFullUpc
+              ? rec.currentFullUpcValue
+              : (cellObj?.value ?? '');
+            return {
+              colIndex: h.colIndex,
+              colLetter: h.colLetter,
+              cellRef: `${h.colLetter}${rec.rowNumber}`,
+              headerName: h.name,
+              value: String(val ?? '').trim(),
+              formula: cellObj?.formula || null,
+              isFflz: h.isFflz,
+              isFullUpc: h.isFullUpc
+            };
           });
 
           headersToIndex.forEach(h => {
@@ -1404,7 +1372,7 @@ body {
                 : 'N/A',
               currentFflzValue: rec.currentFflzValue,
               currentFullUpcValue: rec.currentFullUpcValue || '',
-              get allRowFields() { return makeAllRowFields(); }
+              allRowFields
             };
 
             allEntries.push(productEntry);
@@ -1432,19 +1400,8 @@ body {
 
       if (Array.isArray(index.allEntries) && index.allEntries.length > 0) {
         const rowEvaluations = new Map();
-        const scannedWindow = full.slice(-6);
-        const candidateSet = new Set();
-        // Index construction stores every 3-6 digit substring of each stored
-        // code's last-six window. Only inspect buckets relevant to this scan.
-        for (let len = Math.min(6, scannedWindow.length); len >= 3; len--) {
-          for (let start = 0; start <= scannedWindow.length - len; start++) {
-            const bucket = index.get(scannedWindow.slice(start, start + len));
-            if (bucket) bucket.forEach(entry => candidateSet.add(entry));
-          }
-        }
-        const candidates = candidateSet.size ? candidateSet : index.allEntries;
 
-        for (const entry of candidates) {
+        for (const entry of index.allEntries) {
           const score = computeCappedSuffixScore(full, entry.normalizedCode);
           if (!score) continue;
 
@@ -2000,7 +1957,6 @@ body {
       // Validate the ZIP container and its workbook relationships before parsing any user-supplied XML.
       // Limits are intentionally conservative for a browser-only application.
       static async validateWorkbookArchive(arrayBuffer) {
-        await window.ensureUISDependency('jszip');
         if (!(arrayBuffer instanceof ArrayBuffer) || arrayBuffer.byteLength < 4) {
           throw new Error('The selected file is empty or is not a valid workbook archive.');
         }
@@ -2095,7 +2051,6 @@ body {
       }
 
       static async inspectAndPrepareWorkbook(arrayBuffer, filename, headerRowOverrides = {}, inventoryColumnConfig = null) {
-        await window.ensureUISDependency('jszip');
         // Inventory columns are assigned only from an explicit user choice for this import.
         const configuredInventoryHeader = String(inventoryColumnConfig?.headerName || '').trim();
         // Worker pre-inflates XML entries; fall back gracefully if Worker/CDN access is unavailable.
@@ -2241,19 +2196,16 @@ body {
 
             // The user explicitly chooses whether this worksheet reuses a column
             // or receives a newly-created inventory column. Never infer a choice.
-            const supportsPerSheetChoice = inventoryColumnConfig?.mode === 'choose' || inventoryColumnConfig?.mode === 'mixed';
-            const chosenColIndex = supportsPerSheetChoice
+            const chosenColIndex = inventoryColumnConfig?.mode === 'choose'
               ? Number(inventoryColumnConfig.selections?.[sheetName])
               : 0;
-            const createThisSheet = inventoryColumnConfig?.mode === 'create' ||
-              (inventoryColumnConfig?.mode === 'mixed' && Array.isArray(inventoryColumnConfig.createSheets) && inventoryColumnConfig.createSheets.includes(sheetName));
 
-            if (supportsPerSheetChoice && chosenColIndex > 0 && headerCells[chosenColIndex]) {
+            if (inventoryColumnConfig?.mode === 'choose' && chosenColIndex > 0 && headerCells[chosenColIndex]) {
               fflzColIndex = chosenColIndex;
               fflzColLetter = colIndexToLetter(chosenColIndex);
               fflzHeaderName = String(headerCells[chosenColIndex].value || `Column ${fflzColLetter}`).trim();
               fflzStatus = 'EXISTING';
-            } else if (createThisSheet && configuredInventoryHeader) {
+            } else if (inventoryColumnConfig?.mode === 'create' && configuredInventoryHeader) {
               fflzStatus = 'CREATED';
               fflzHeaderName = configuredInventoryHeader;
               fflzColIndex = maxCol + 1;
@@ -2423,7 +2375,6 @@ body {
       }
 
       static async exportAndVerifyWorkbook(workbookState) {
-        await window.ensureUISDependency('jszip');
         const origZip = await window.JSZip.loadAsync(workbookState.originalBuffer);
         const workZip = await window.JSZip.loadAsync(workbookState.workingBuffer);
         const parser = new DOMParser();
@@ -3102,9 +3053,6 @@ body {
         // storage eviction. This never uploads data or enables cloud sync.
         try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch (_) {}
         await this.restoreWorkspaceIfAvailable();
-        // Public GitHub ZIP imports run only after local recovery has completed.
-        // They add new workbook copies; they never overwrite local workbook edits.
-        await this.autoImportGithubZipFiles();
       },
 
       // Local recovery uses IndexedDB because workbook buffers can exceed localStorage limits.
@@ -3113,10 +3061,16 @@ body {
         if (this._workspaceDbPromise) return this._workspaceDbPromise;
         this._workspaceDbPromise = new Promise((resolve, reject) => {
           if (!('indexedDB' in window)) { reject(new Error('IndexedDB is unavailable')); return; }
+          // Keep this schema version aligned with the UIS v3 local database.
+          // Some earlier builds opened this same database at v2, which makes
+          // IndexedDB reject the request when the browser already has v3 data.
+          // Opening at the current version preserves existing snapshots and stores.
           const request = indexedDB.open('UIS_LocalWorkspace', 3);
           request.onupgradeneeded = () => {
             const db = request.result;
             if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', { keyPath: 'id' });
+            // v3 global-search builds use this store. Create it on fresh installs
+            // or when upgrading older databases; never delete or recreate stores.
             if (!db.objectStoreNames.contains('searchIndexes')) db.createObjectStore('searchIndexes', { keyPath: 'id' });
           };
           request.onsuccess = () => {
@@ -3151,12 +3105,12 @@ body {
         this._workspaceSaveRevision = (this._workspaceSaveRevision || 0) + 1;
         this._workspaceSaveError = null;
         clearTimeout(this._workspaceSaveTimer);
-        // Coalesce rapid edits into one IndexedDB snapshot. Explicit flushes,
-        // workbook switches, and page-hide handlers still force an immediate save.
+        // Persist on the next task turn. This is intentionally not a long debounce:
+        // inventory edits should reach IndexedDB as soon as the current UI event ends.
         this._workspaceSaveTimer = setTimeout(() => {
           this._workspaceSaveTimer = null;
           this.persistWorkspaceSnapshot().catch(err => console.warn('UIS autosave failed:', err));
-        }, 650);
+        }, 0);
       },
 
       async persistWorkspaceSnapshot() {
@@ -4295,9 +4249,6 @@ body {
               if (usable.length) { this._posScanDetector = new window.BarcodeDetector({ formats:usable }); this._posScanDecoder = 'NATIVE'; }
             } catch (_) {}
           }
-          if (this._posScanDecoder === 'NONE') {
-            try { await window.ensureUISDependency('zxing'); } catch (error) { console.warn('UIS POS ZXing fallback unavailable:', error); }
-          }
           if (this._posScanDecoder === 'NONE' && window.ZXing?.MultiFormatReader) {
             try {
               const Z = window.ZXing, hints = new Map();
@@ -4924,186 +4875,14 @@ body {
         for (const file of files) await this.handleSingleWorkbookUpload(file);
       },
 
-      // GitHub Pages cannot list a folder by itself, so UIS reads the public
-      // repository tree through GitHub's API and downloads ZIPs from /workbooks.
-      // The import ledger is local metadata only; inventory data stays in IndexedDB.
-      getGithubPagesRepository() {
-        const host = String(location.hostname || '').toLowerCase();
-        if (!host.endsWith('.github.io')) return null;
-        const owner = host.slice(0, -'.github.io'.length);
-        const parts = String(location.pathname || '/').split('/').filter(Boolean);
-        const repo = parts.length ? parts[0] : `${owner}.github.io`;
-        if (!owner || !repo) return null;
-        return { owner, repo };
-      },
-
-      getGithubAutoImportLedger() {
-        try {
-          const parsed = JSON.parse(localStorage.getItem('uis-github-zip-import-ledger-v1') || '[]');
-          return Array.isArray(parsed) ? parsed.filter(x => x && typeof x.source === 'string' && typeof x.entry === 'string' && typeof x.sha256 === 'string') : [];
-        } catch (_) { return []; }
-      },
-
-      saveGithubAutoImportLedger(ledger) {
-        try {
-          // Keep this tiny: one record per successfully imported workbook file.
-          localStorage.setItem('uis-github-zip-import-ledger-v1', JSON.stringify(ledger.slice(-3000)));
-          return true;
-        } catch (error) {
-          console.warn('UIS could not save the GitHub ZIP import ledger:', error);
-          return false;
-        }
-      },
-
-      async getGithubFileSha256(buffer) {
-        if (!window.crypto?.subtle) throw new Error('Secure SHA-256 hashing is unavailable in this browser.');
-        const digest = await crypto.subtle.digest('SHA-256', buffer);
-        return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
-      },
-
-      getGithubAutoInventoryConfig(inspected) {
-        const sheets = (inspected.worksheets || []).filter(ws => ws.headerRowNum && Array.isArray(ws.headers) && ws.headers.length);
-        if (!sheets.length) return { mode: 'skip' };
-        const priorities = ['fflz-20', 'stock', 'stock qty', 'stock quantity', 'quantity', 'qty', 'inventory', 'inventory qty', 'on hand', 'qty on hand', 'available qty', 'available stock'];
-        const selections = {};
-        const createSheets = [];
-        for (const ws of sheets) {
-          const normalized = ws.headers.map(h => ({
-            colIndex: Number(h.colIndex),
-            name: String(h.name || '').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ')
-          }));
-          let match = null;
-          for (const wanted of priorities) {
-            match = normalized.find(h => h.name === wanted);
-            if (match) break;
-          }
-          // Conservative fallback: only accept headers that clearly describe stock.
-          if (!match) match = normalized.find(h => /(^|\b)(stock|on hand|available stock)(\b|$)/i.test(h.name));
-          if (match && match.colIndex > 0) selections[ws.sheetName] = match.colIndex;
-          else createSheets.push(ws.sheetName);
-        }
-        if (createSheets.length && Object.keys(selections).length) {
-          return { mode: 'mixed', selections, createSheets, headerName: 'FFLZ-20' };
-        }
-        if (createSheets.length) return { mode: 'create', headerName: 'FFLZ-20' };
-        return { mode: 'choose', selections };
-      },
-
-      async autoImportGithubZipFiles() {
-        if (this._githubAutoImportRunning) return;
-        this._githubAutoImportRunning = true;
-        try {
-          const repository = this.getGithubPagesRepository();
-          if (!repository) {
-            this.showToast('GitHub ZIP auto-import needs the standard owner.github.io/repository Pages address. Local workbooks were left unchanged.', 'error');
-            return;
-          }
-          const { owner, repo } = repository;
-          const apiBase = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-          const repoResponse = await fetch(apiBase, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' });
-          if (!repoResponse.ok) throw new Error(`GitHub repository lookup failed (HTTP ${repoResponse.status}). The repository must be public.`);
-          const repoInfo = await repoResponse.json();
-          const branch = String(repoInfo.default_branch || 'main');
-          const treeResponse = await fetch(`${apiBase}/git/trees/${encodeURIComponent(branch)}?recursive=1`, {
-            headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store'
-          });
-          if (!treeResponse.ok) throw new Error(`Could not read the GitHub repository file list (HTTP ${treeResponse.status}).`);
-          const treeData = await treeResponse.json();
-          if (treeData.truncated) throw new Error('GitHub returned an incomplete repository file list. Reduce the repository size or use a dedicated workbooks folder.');
-          const zipFiles = (treeData.tree || [])
-            .filter(item => item && item.type === 'blob' && /^workbooks\/.+\.zip$/i.test(String(item.path || '')))
-            .map(item => ({ path: String(item.path), sha: String(item.sha || '') }))
-            .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
-          if (!zipFiles.length) {
-            this.showToast('No ZIP files found. Put your workbook archives in the repository’s workbooks/ folder.', 'success');
-            return;
-          }
-          await window.ensureUISDependency('jszip');
-          let ledger = this.getGithubAutoImportLedger();
-          // If the local workspace was cleared, let the repository restore its workbooks.
-          if (!(this.openWorkbooks?.length || this.workbook)) ledger = [];
-          const source = `${owner}/${repo}@${branch}`;
-          let imported = 0, unchanged = 0, failed = 0;
-          for (const zipItem of zipFiles) {
-            const path = zipItem.path;
-            try {
-              if (zipItem.sha && ledger.some(x => x.source === source && x.zip === path && x.entry === '__archive__' && x.sha256 === zipItem.sha)) {
-                unchanged++;
-                continue;
-              }
-              const failuresBeforeArchive = failed;
-              const encodedPath = path.split('/').map(encodeURIComponent).join('/');
-              const rawUrl = `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/${encodedPath}`;
-              const response = await fetch(rawUrl, { cache: 'no-store' });
-              if (!response.ok) throw new Error(`Download failed (HTTP ${response.status}).`);
-              const declaredLength = Number(response.headers.get('content-length') || 0);
-              if (declaredLength > 250 * 1024 * 1024) throw new Error('ZIP is larger than the 250 MB safety limit.');
-              const zipBuffer = await response.arrayBuffer();
-              if (zipBuffer.byteLength > 250 * 1024 * 1024) throw new Error('ZIP is larger than the 250 MB safety limit.');
-              const archive = await JSZip.loadAsync(zipBuffer, { checkCRC32: true, createFolders: false });
-              const entries = Object.values(archive.files || {})
-                .filter(entry => entry && !entry.dir && /\.(xlsx|xlsm)$/i.test(entry.name) && !entry.name.split('/').some(part => part.startsWith('__MACOSX')))
-                .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-              let totalExtractedBytes = 0;
-              const knownExtractedBytes = entries.reduce((sum, entry) => sum + (Number(entry?._data?.uncompressedSize) || 0), 0);
-              if (knownExtractedBytes > 1024 * 1024 * 1024) throw new Error('ZIP expands beyond the 1 GB safety limit. Split it into smaller archives.');
-              for (const entry of entries) {
-                const expectedSize = Number(entry?._data?.uncompressedSize) || 0;
-                if (expectedSize > 50 * 1024 * 1024) { failed++; continue; }
-                const buffer = await entry.async('arraybuffer');
-                totalExtractedBytes += buffer.byteLength;
-                if (buffer.byteLength > 50 * 1024 * 1024 || totalExtractedBytes > 1024 * 1024 * 1024) { failed++; continue; }
-                const sha256 = await this.getGithubFileSha256(buffer);
-                const priorSamePath = ledger.find(x => x.source === source && x.zip === path && x.entry === entry.name);
-                if (ledger.some(x => x.source === source && x.zip === path && x.entry === entry.name && x.sha256 === sha256)) {
-                  unchanged++;
-                  continue;
-                }
-                const entryParts = entry.name.split('/').filter(Boolean);
-                const baseName = entryParts.pop() || 'workbook.xlsx';
-                let fileName = entryParts.length ? `${entryParts.join('_')}__${baseName}` : baseName;
-                if (priorSamePath) {
-                  const dot = fileName.lastIndexOf('.');
-                  fileName = `${dot > 0 ? fileName.slice(0, dot) : fileName}__github_${sha256.slice(0, 8)}${dot > 0 ? fileName.slice(dot) : ''}`;
-                }
-                const mime = fileName.toLowerCase().endsWith('.xlsm')
-                  ? 'application/vnd.ms-excel.sheet.macroEnabled.12'
-                  : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-                const workbookFile = new File([buffer], fileName, { type: mime, lastModified: Date.now() });
-                this.showToast(`GitHub import: ${fileName}`, 'success');
-                const succeeded = await this.handleSingleWorkbookUpload(workbookFile, { autoImport: true });
-                if (succeeded) {
-                  ledger.push({ source, zip: path, entry: entry.name, sha256, importedAt: Date.now(), workbookName: fileName });
-                  if (!this.saveGithubAutoImportLedger(ledger)) throw new Error('Imported workbook, but could not save the duplicate-prevention record.');
-                  imported++;
-                } else failed++;
-              }
-              if (zipItem.sha && failed === failuresBeforeArchive) {
-                ledger.push({ source, zip: path, entry: '__archive__', sha256: zipItem.sha, importedAt: Date.now(), workbookName: '' });
-                if (!this.saveGithubAutoImportLedger(ledger)) throw new Error('Could not save the GitHub ZIP version record.');
-              }
-            } catch (error) {
-              failed++;
-              console.warn(`UIS GitHub ZIP import failed for ${path}:`, error);
-            }
-          }
-          if (imported) this.showToast(`GitHub check complete: ${imported} new workbook file(s) imported, ${unchanged} ZIP source(s) already current, ${failed} skipped or failed. Local edits were not overwritten.`, failed ? 'error' : 'success');
-          else if (failed) this.showToast(`GitHub check finished: no new workbooks imported; ${unchanged} ZIP source(s) already current and ${failed} skipped or failed.`, 'error');
-          else this.showToast(`GitHub check complete: ${unchanged} ZIP source(s) already current.`, 'success');
-        } catch (error) {
-          console.warn('UIS GitHub ZIP auto-import could not run:', error);
-          this.showToast(`GitHub ZIP auto-import unavailable: ${error?.message || 'network or repository error'}. Your local workspace was not cleared.`, 'error');
-        } finally {
-          this._githubAutoImportRunning = false;
-        }
-      },
-
       async handleZipUpload(e) {
         const zipFile = e?.target?.files?.[0];
         if (e?.target) e.target.value = '';
         if (!zipFile) return;
-        try { await window.ensureUISDependency('jszip'); }
-        catch (error) { this.showErrorBanner(`ZIP import is unavailable: ${error.message}`); return; }
+        if (!window.JSZip) {
+          this.showErrorBanner('ZIP import is unavailable because the archive library did not load. Check your internet connection and reload UIS.');
+          return;
+        }
         // Resource safeguards are based on bytes, not workbook count. Each
         // extracted workbook still passes through the normal 50 MB validation.
         const MAX_ZIP_BYTES = 250 * 1024 * 1024;
@@ -5172,15 +4951,15 @@ body {
         else this.showErrorBanner(summary + ' Check the workbook setup prompts and file formats.');
       },
 
-      async handleSingleWorkbookUpload(file, options = {}) {
-        if (!file) return false;
+      async handleSingleWorkbookUpload(file) {
+        if (!file) return;
         if (!file.name.toLowerCase().endsWith('.xlsx') && !file.name.toLowerCase().endsWith('.xlsm')) {
           this.showErrorBanner(`Unsupported file type: ${file.name}. Choose an Excel .xlsx or .xlsm workbook.`);
-          return false;
+          return;
         }
         if (file.size > 50 * 1024 * 1024) {
           this.showErrorBanner('This workbook is larger than 50 MB. Choose a smaller .xlsx or .xlsm file.');
-          return false;
+          return;
         }
 
         this.clearErrorBanner();
@@ -5200,27 +4979,10 @@ body {
             { mode: 'skip' }
           );
 
-          // During a multi-file import, ask for inventory-column creation once.
-          // If the user approves creating a column, reuse that exact header choice
-          // for every remaining workbook in this batch instead of showing the same
-          // approval dialog repeatedly.
-          let inventoryConfig = null;
-          if (this._uisInventoryColumnBatchActive && this._uisInventoryColumnBatchConfig?.mode === 'create') {
-            inventoryConfig = { ...this._uisInventoryColumnBatchConfig };
-          } else if (this._uisInventoryColumnBatchActive && this._uisInventoryColumnBatchConfig?.mode === 'cancel') {
-            return false;
-          } else {
-            inventoryConfig = await this.openInventoryColumnSetup(inspected);
-            if (this._uisInventoryColumnBatchActive) {
-              if (!inventoryConfig) this._uisInventoryColumnBatchConfig = { mode: 'cancel' };
-              else if (inventoryConfig.mode === 'create') {
-                this._uisInventoryColumnBatchConfig = { mode: 'create', headerName: String(inventoryConfig.headerName || 'FFLZ-20').trim() };
-              }
-            }
-          }
+          const inventoryConfig = await this.openInventoryColumnSetup(inspected);
           if (!inventoryConfig) {
             this.showToast('Workbook import cancelled. No inventory column was changed.', 'error');
-            return false;
+            return;
           }
 
           // Second pass applies the user's explicit column choice to the original file.
@@ -5233,12 +4995,9 @@ body {
           const importValidation = this.validateInspectedWorkbook(inspected);
           if (importValidation.warnings.length) {
             const warningText = importValidation.warnings.map(w => `• ${w}`).join('\n');
-            if (options.autoImport) {
-              console.warn(`GitHub workbook validation warnings for ${file.name}:\n${warningText}`);
-              this.showToast(`Imported ${file.name} with ${importValidation.warnings.length} validation warning(s). Review the workbook after startup.`, 'error');
-            } else if (!window.confirm(`WORKBOOK VALIDATION\n\nWorksheets: ${importValidation.sheetCount}\nRecords: ${importValidation.totalRecords.toLocaleString()}\n\nWarnings:\n${warningText}\n\nContinue importing? You can review and correct these issues after import.`)) {
+            if (!window.confirm(`WORKBOOK VALIDATION\n\nWorksheets: ${importValidation.sheetCount}\nRecords: ${importValidation.totalRecords.toLocaleString()}\n\nWarnings:\n${warningText}\n\nContinue importing? You can review and correct these issues after import.`)) {
               this.showToast('Import cancelled after validation. Existing workspace was kept.', 'error');
-              return false;
+              return;
             }
           }
           if (!Array.isArray(this.openWorkbooks)) this.openWorkbooks = [];
@@ -5263,10 +5022,8 @@ body {
           const saved = await this.flushWorkspaceSave();
           if (!saved || this._workspaceSaveError) throw this._workspaceSaveError || new Error('Local recovery could not be verified. Download a JSON backup before leaving this page.');
           this.showToast(`Imported "${file.name}" and verified the local recovery copy.`);
-          return true;
         } catch (err) {
           this.showErrorBanner(`Workbook Inspection Error: ${err.message}`);
-          return false;
         }
       },
 
@@ -5985,9 +5742,6 @@ handleSetScannedItemQty(rawAddedQty) {
                 this._scanDecoder = 'NATIVE';
               }
             } catch (_) {}
-          }
-          if (this._scanDecoder === 'NONE') {
-            try { await window.ensureUISDependency('zxing'); } catch (error) { console.warn('UIS inventory ZXing fallback unavailable:', error); }
           }
           if (this._scanDecoder === 'NONE' && window.ZXing) {
             try {
@@ -8446,10 +8200,7 @@ handleSetScannedItemQty(rawAddedQty) {
         const partial = buildCodeIndex(wb.worksheets, workbookIdx, wb.filename || `Workbook ${workbookIdx+1}`);
         (partial.allEntries||[]).forEach(entry => {
           allEntries.push(entry);
-          const lastSix=String(entry.normalizedCode||'').slice(-6);
-          const keys=new Set([entry.normalizedCode,lastSix]);
-          for(let len=3;len<=Math.min(6,lastSix.length);len++) for(let start=0;start<=lastSix.length-len;start++) keys.add(lastSix.slice(start,start+len));
-          keys.forEach(key => {
+          [entry.normalizedCode, entry.normalizedCode?.length>6 ? entry.normalizedCode.slice(-6) : ''].forEach(key => {
             if (!key) return;
             const bucket = globalIndex.get(key)||[];
             if (!bucket.some(p=>p.workbookIdx===entry.workbookIdx&&p.sheetIdx===entry.sheetIdx&&p.rowNumber===entry.rowNumber)) bucket.push(entry);
@@ -8704,333 +8455,6 @@ handleSetScannedItemQty(rawAddedQty) {
       if(keepPosView)this.activeView='pos';
       this.renderAll();
     };
-    // Performance safeguards for large workspaces. Imports remain sequential and
-    // each workbook still receives its normal verified local save.
-    app._uisImportBatchMode = false;
-    app._uisImportYield = () => new Promise(resolve => setTimeout(resolve, 0));
-    const _uisRebuildIndexForPerf = app.rebuildIndex.bind(app);
-    app.rebuildIndex = function() {
-      if (this._uisImportBatchMode) { this._uisIndexNeedsRebuild = true; return; }
-      return _uisRebuildIndexForPerf();
-    };
-    const _uisRenderAllForPerf = app.renderAll.bind(app);
-    app.renderAll = function() {
-      if (this._uisImportBatchMode) { this._uisRenderNeedsRefresh = true; return; }
-      return _uisRenderAllForPerf();
-    };
-    app._uisRunImportBatch = async function(task) {
-      const wasBatch = this._uisImportBatchMode;
-      const oldRender = this.renderAll;
-      const oldRebuild = this.rebuildIndex;
-      this._uisImportBatchMode = true;
-      this._uisIndexNeedsRebuild = false;
-      this._uisRenderNeedsRefresh = false;
-      try {
-        return await task();
-      } finally {
-        this._uisImportBatchMode = wasBatch;
-        if (!wasBatch) {
-          this._uisIndexNeedsRebuild = false;
-          this._uisRenderNeedsRefresh = false;
-          _uisRebuildIndexForPerf();
-          _uisRenderAllForPerf();
-          await this.flushWorkspaceSave().catch(err => { console.error('UIS final batch save failed:', err); this.showToast('Final batch save needs attention. Download a JSON backup.', 'error'); });
-        }
-      }
-    };
-    const _uisHandleFileUploadPerf = app.handleFileUpload.bind(app);
-    app.handleFileUpload = async function(e) {
-      const files = Array.from(e?.target?.files || []);
-      if (e?.target) e.target.value = '';
-      if (!files.length) return;
-      this._uisInventoryColumnBatchActive = true;
-      this._uisInventoryColumnBatchConfig = null;
-      try {
-        return await this._uisRunImportBatch(async () => {
-          for (let i = 0; i < files.length; i++) {
-            await this.handleSingleWorkbookUpload(files[i]);
-            await this._uisImportYield();
-          }
-        });
-      } finally {
-        this._uisInventoryColumnBatchActive = false;
-        this._uisInventoryColumnBatchConfig = null;
-      }
-    };
-    const _uisHandleZipUploadPerf = app.handleZipUpload.bind(app);
-    app.handleZipUpload = async function(e) {
-      this._uisInventoryColumnBatchActive = true;
-      this._uisInventoryColumnBatchConfig = null;
-      try {
-        return await this._uisRunImportBatch(async () => {
-          await _uisHandleZipUploadPerf(e);
-          await this._uisImportYield();
-        });
-      } finally {
-        this._uisInventoryColumnBatchActive = false;
-        this._uisInventoryColumnBatchConfig = null;
-      }
-    };
-
-    // Keep undo/redo bounded by both operation count and estimated memory.
-    // This avoids dozens of full-workbook clones accumulating on low-RAM phones.
-    app.historyLimit = 10;
-    app.historyMemoryBudgetBytes = 48 * 1024 * 1024;
-    app._uisEstimateSnapshotBytes = function(snapshot) {
-      let bytes = 4096;
-      const books = snapshot?.workbookSnapshots?.map(x => x.workbook) || (snapshot?.workbook ? [snapshot.workbook] : []);
-      for (const wb of books) {
-        bytes += Number(wb?.originalBuffer?.byteLength || 0) + Number(wb?.workingBuffer?.byteLength || 0);
-        for (const ws of wb?.worksheets || []) {
-          bytes += (ws.records?.length || 0) * 96;
-          for (const rec of ws.records || []) bytes += (rec.cells?.length || 0) * 40;
-        }
-      }
-      return bytes;
-    };
-    app._uisTrimHistory = function() {
-      const combined = [...(this.undoStack || []), ...(this.redoStack || [])];
-      let total = combined.reduce((sum, item) => sum + (item?._uisEstimatedBytes || this._uisEstimateSnapshotBytes(item)), 0);
-      while ((this.undoStack.length + this.redoStack.length) > this.historyLimit || total > this.historyMemoryBudgetBytes) {
-        const stack = this.undoStack.length ? this.undoStack : this.redoStack;
-        if (!stack.length) break;
-        const removed = stack.shift();
-        total -= removed?._uisEstimatedBytes || this._uisEstimateSnapshotBytes(removed);
-      }
-    };
-    const _uisPushUndoPerf = app.pushUndoState.bind(app);
-    app.pushUndoState = function(label='Edit') {
-      _uisPushUndoPerf(label);
-      const item = this.undoStack[this.undoStack.length - 1];
-      if (item) item._uisEstimatedBytes = this._uisEstimateSnapshotBytes(item);
-      this._uisTrimHistory();
-    };
-    const _uisUndoPerf = app.undoEdit.bind(app);
-    app.undoEdit = function() { _uisUndoPerf(); const item=this.redoStack[this.redoStack.length-1]; if(item && !item._uisEstimatedBytes)item._uisEstimatedBytes=this._uisEstimateSnapshotBytes(item); this._uisTrimHistory(); };
-    const _uisRedoPerf = app.redoEdit.bind(app);
-    app.redoEdit = function() { _uisRedoPerf(); const item=this.undoStack[this.undoStack.length-1]; if(item && !item._uisEstimatedBytes)item._uisEstimatedBytes=this._uisEstimateSnapshotBytes(item); this._uisTrimHistory(); };
-
-    // Lightweight performance panel. Values are estimates where browser APIs do
-    // not expose exact per-tab memory usage.
-    app.openPerformancePanel = async function() {
-      let panel = document.getElementById('uis-performance-panel');
-      if (!panel) {
-        panel = document.createElement('section'); panel.id = 'uis-performance-panel';
-        panel.style.cssText = 'position:fixed;z-index:9998;right:12px;top:76px;width:min(360px,calc(100vw - 24px));max-height:70vh;overflow:auto;background:#101a22;color:#e5eef3;border:1px solid #36505d;border-radius:14px;padding:14px;box-shadow:0 18px 55px #0009;font:12px system-ui';
-        document.body.appendChild(panel);
-      }
-      const books=this.getWorkspaceWorkbooks();
-      let records=0, sheets=0, bytes=0, indexed=0;
-      for(const wb of books){
-        bytes += Number(wb?.originalBuffer?.byteLength||0)+Number(wb?.workingBuffer?.byteLength||0);
-        for(const ws of wb?.worksheets||[]){sheets++;records += ws.records?.length||0;}
-      }
-      indexed = this.inventoryCodeIndex?.allEntries?.length || 0;
-      let storage='Not available';
-      try { const est=await navigator.storage?.estimate?.(); if(est){const mb=n=>(Number(n||0)/1048576).toFixed(1);storage=`${mb(est.usage)} MB used / ${est.quota?mb(est.quota)+' MB quota':'quota unavailable'}`;} } catch(_) {}
-      const mb=n=>(n/1048576).toFixed(1);
-      panel.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong style="font-size:14px">UIS Performance</strong><button type="button" id="uis-perf-close" style="padding:5px 9px;border:1px solid #456;border-radius:8px">Close</button></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">${[['Workbooks',books.length],['Worksheets',sheets],['Records',records.toLocaleString()],['Indexed codes',indexed.toLocaleString()],['Workbook buffers',mb(bytes)+' MB'],['Undo / redo',(this.undoStack?.length||0)+' / '+(this.redoStack?.length||0)]].map(([k,v])=>`<div style="background:#1a2933;border-radius:9px;padding:9px"><div style="color:#9fb2bd">${k}</div><strong style="font-size:15px">${v}</strong></div>`).join('')}</div><p style="margin:10px 0 0;color:#a9bdc7">Browser storage: ${storage}</p><p style="margin:8px 0 0;color:#f4c979">Buffer size is not total RAM usage. Actual capacity depends on your phone and browser.</p><p style="margin:8px 0 0;color:#9fb2bd">Local-only workspace. No cloud upload.</p>`;
-      panel.querySelector('#uis-perf-close')?.addEventListener('click',()=>panel.remove());
-    };
-    const perfButton=document.createElement('button');
-    perfButton.type='button'; perfButton.id='uis-performance-button'; perfButton.textContent='Performance';
-    perfButton.title='View UIS workspace size and performance indicators';
-    perfButton.style.cssText='position:fixed;right:12px;bottom:14px;z-index:9997;padding:9px 12px;border-radius:999px;background:#19352f;color:#8df0d0;border:1px solid #3b806f;font:600 11px system-ui;box-shadow:0 5px 18px #0007';
-    perfButton.addEventListener('click',()=>app.openPerformancePanel());
-    document.addEventListener('DOMContentLoaded',()=>{if(!document.getElementById('uis-performance-button'))document.body.appendChild(perfButton);},{once:true});
-    if(document.readyState!=='loading' && !document.getElementById('uis-performance-button')) document.body.appendChild(perfButton);
-
-    // -----------------------------------------------------------------------
-    // PERSISTENT WORKSPACE-WIDE SEARCH INDEX (IndexedDB, local-only)
-    // The workbook data remains the source of truth. This compact index stores
-    // stable workbook/sheet/row references and is rebuilt whenever inventory
-    // changes. Barcode matching rules are not changed.
-    // -----------------------------------------------------------------------
-    app.getGlobalSearchSignature = function() {
-      return JSON.stringify(this.getWorkspaceWorkbooks().map((wb, workbookIdx) => ({
-        workbookIdx,
-        filename: String(wb?.filename || ''),
-        revision: Number(wb?._uisIndexRevision || 0),
-        sheets: (wb?.worksheets || []).length,
-        records: (wb?.worksheets || []).reduce((sum, ws) => sum + (ws?.records?.length || 0), 0)
-      })));
-    };
-
-    app.persistGlobalSearchIndex = async function() {
-      try {
-        if (!this.getWorkspaceWorkbooks().length) return false;
-        const db = await this.openWorkspaceDatabase();
-        const entries = (this.inventoryCodeIndex?.allEntries || []).map(entry => ({
-          workbookIdx: entry.workbookIdx ?? 0,
-          workbookName: entry.workbookName || '',
-          sheetIdx: entry.sheetIdx,
-          sheetName: entry.sheetName || '',
-          rowNumber: entry.rowNumber,
-          matchedColIndex: entry.matchedColIndex,
-          matchedColLetter: entry.matchedColLetter || '',
-          matchedColumnName: entry.matchedColumnName || '',
-          columnCategory: entry.columnCategory || 'CODE',
-          storedCode: entry.storedCode || '',
-          normalizedCode: entry.normalizedCode || '',
-          codeColDisplay: entry.codeColDisplay || '—',
-          barcodeColDisplay: entry.barcodeColDisplay || '—',
-          skuDisplay: entry.skuDisplay || '',
-          itemName: entry.itemName || 'Unnamed Product',
-          price: entry.price || 'N/A',
-          currentFflzValue: entry.currentFflzValue ?? '',
-          currentFullUpcValue: entry.currentFullUpcValue || ''
-        }));
-        await new Promise((resolve, reject) => {
-          const tx = db.transaction('searchIndexes', 'readwrite');
-          tx.objectStore('searchIndexes').put({ id: 'global', version: 1, signature: this.getGlobalSearchSignature(), savedAt: Date.now(), entries });
-          tx.oncomplete = resolve;
-          tx.onerror = tx.onabort = () => reject(tx.error || new Error('Search index save failed'));
-        });
-        this._uisSearchIndexLastSavedAt = Date.now();
-        return true;
-      } catch (error) {
-        console.warn('UIS could not persist the local global search index:', error);
-        this._uisSearchIndexSaveError = error;
-        return false;
-      }
-    };
-
-    app.restoreGlobalSearchIndex = async function() {
-      try {
-        const db = await this.openWorkspaceDatabase();
-        const saved = await new Promise((resolve, reject) => {
-          const tx = db.transaction('searchIndexes', 'readonly');
-          const req = tx.objectStore('searchIndexes').get('global');
-          req.onsuccess = () => resolve(req.result || null);
-          req.onerror = () => reject(req.error || new Error('Search index read failed'));
-        });
-        if (!saved || saved.version !== 1 || saved.signature !== this.getGlobalSearchSignature() || !Array.isArray(saved.entries)) return false;
-        const books = this.getWorkspaceWorkbooks();
-        const globalIndex = new Map();
-        const allEntries = [];
-        for (const stored of saved.entries) {
-          const wb = books[Number(stored.workbookIdx)];
-          const ws = wb?.worksheets?.[Number(stored.sheetIdx)];
-          const rec = ws?.records?.find(row => Number(row.rowNumber) === Number(stored.rowNumber));
-          if (!wb || !ws || !rec) return false;
-          const entry = { ...stored };
-          // Resolve full row details lazily only when a user opens a match.
-          Object.defineProperty(entry, 'allRowFields', { enumerable: true, get: () => ws.headers.map(h => {
-            const cellObj = rec.cells?.[h.colIndex];
-            const val = h.isFflz ? rec.currentFflzValue : h.isFullUpc ? rec.currentFullUpcValue : (cellObj?.value ?? '');
-            return { colIndex: h.colIndex, colLetter: h.colLetter, cellRef: `${h.colLetter}${rec.rowNumber}`, headerName: h.name,
-              value: String(val ?? '').trim(), formula: cellObj?.formula || null, isFflz: h.isFflz, isFullUpc: h.isFullUpc };
-          }) });
-          allEntries.push(entry);
-          const lastSix = String(entry.normalizedCode || '').slice(-6);
-          const keys = new Set([entry.normalizedCode, lastSix]);
-          for (let len = 3; len <= Math.min(6, lastSix.length); len++) {
-            for (let start = 0; start <= lastSix.length - len; start++) keys.add(lastSix.slice(start, start + len));
-          }
-          for (const key of keys) {
-            if (!key) continue;
-            const bucket = globalIndex.get(key) || [];
-            if (!bucket.some(item => item.workbookIdx === entry.workbookIdx && item.sheetIdx === entry.sheetIdx && Number(item.rowNumber) === Number(entry.rowNumber))) bucket.push(entry);
-            globalIndex.set(key, bucket);
-          }
-        }
-        globalIndex.allEntries = allEntries;
-        this.codeIndex = globalIndex;
-        this.inventoryCodeIndex = globalIndex;
-        this._uisSearchIndexLastSavedAt = Number(saved.savedAt) || 0;
-        this._uisGlobalSearchIndexDirty = false;
-        return true;
-      } catch (error) {
-        console.warn('UIS could not restore the local global search index; rebuilding it:', error);
-        return false;
-      }
-    };
-
-    // Only changed workbooks invalidate the cached global index. The current
-    // workbook data remains authoritative, so a missing/stale cache is rebuilt.
-    const _uisMarkWorkbookModifiedIndex = app.markWorkbookModified.bind(app);
-    app.markWorkbookModified = function(workbookIdx) {
-      const idx = Number.isInteger(Number(workbookIdx)) ? Number(workbookIdx) : (this.activeWorkbookTabIndex || 0);
-      const wb = this.getWorkspaceWorkbooks()[idx];
-      if (wb) wb._uisIndexRevision = Number(wb._uisIndexRevision || 0) + 1;
-      this._uisGlobalSearchIndexDirty = true;
-      this._gridSearchIndexedWorkbook = null;
-      this._gridSearchCache = null;
-      this._gridSearchMatchedRows = null;
-      return _uisMarkWorkbookModifiedIndex(workbookIdx);
-    };
-
-    const _uisRebuildGlobalIndexBase = app.rebuildIndex.bind(app);
-    app.rebuildIndex = function() {
-      if (this._uisDeferGlobalIndexBuild) { this._uisGlobalIndexBuildPending = true; return; }
-      const result = _uisRebuildGlobalIndexBase();
-      this._uisGlobalSearchIndexDirty = false;
-      this.persistGlobalSearchIndex();
-      return result;
-    };
-
-    // During recovery, avoid immediately rebuilding the large index. Restore a
-    // matching persisted index first; if stale/missing, safely rebuild from data.
-    const _uisRestoreWorkspaceWithIndex = app.restoreWorkspaceIfAvailable.bind(app);
-    app.restoreWorkspaceIfAvailable = async function() {
-      this._uisDeferGlobalIndexBuild = true;
-      try { await _uisRestoreWorkspaceWithIndex(); }
-      finally { this._uisDeferGlobalIndexBuild = false; }
-      const restored = await this.restoreGlobalSearchIndex();
-      if (!restored) this.rebuildIndex();
-      this._uisGlobalIndexBuildPending = false;
-    };
-
-    // A scanner always checks freshness before lookup. Manual POS search and the
-    // worksheet-wide text search already aggregate all imported workbooks.
-    const _uisProcessScannedBarcodeIndex = app.handleProcessScannedBarcode.bind(app);
-    app.handleProcessScannedBarcode = function(rawBarcodeString) {
-      if (this._uisGlobalSearchIndexDirty) this.rebuildIndex();
-      return _uisProcessScannedBarcodeIndex(rawBarcodeString);
-    };
-    const _uisPosScannedBarcodeIndex = app.handlePosScannedBarcode.bind(app);
-    app.handlePosScannedBarcode = function(rawBarcodeString) {
-      if (this._uisGlobalSearchIndexDirty) this.rebuildIndex();
-      return _uisPosScannedBarcodeIndex(rawBarcodeString);
-    };
-
-    // The import-batch wrapper defers intermediate index rebuilds. Persist the
-    // final all-workbook index once the batch has completed.
-    const _uisRunImportBatchWithIndex = app._uisRunImportBatch.bind(app);
-    app._uisRunImportBatch = async function(task) {
-      const result = await _uisRunImportBatchWithIndex(task);
-      if (!this._uisImportBatchMode && this.getWorkspaceWorkbooks().length) {
-        this._uisGlobalSearchIndexDirty = false;
-        await this.persistGlobalSearchIndex();
-      }
-      return result;
-    };
-
-    // GitHub auto-import can contain many workbook files. Batch its UI/index work
-    // while retaining each workbook's verified local snapshot save.
-    const _uisAutoImportGithubZipFilesBatch = app.autoImportGithubZipFiles.bind(app);
-    app.autoImportGithubZipFiles = async function() {
-      if (this._uisImportBatchMode) return _uisAutoImportGithubZipFilesBatch();
-      this._uisInventoryColumnBatchActive = true;
-      this._uisInventoryColumnBatchConfig = null;
-      try {
-        return await this._uisRunImportBatch(() => _uisAutoImportGithubZipFilesBatch());
-      } finally {
-        this._uisInventoryColumnBatchActive = false;
-        this._uisInventoryColumnBatchConfig = null;
-      }
-    };
-
-    // Keep source references stable for duplicate codes across different files.
-    app.resolveGlobalSearchEntry = function(entry) {
-      if (!entry) return null;
-      const workbookIdx = Number(entry.workbookIdx ?? 0);
-      const workbook = this.getWorkspaceWorkbooks()[workbookIdx];
-      const sheet = workbook?.worksheets?.[Number(entry.sheetIdx)];
-      const record = sheet?.records?.find(row => Number(row.rowNumber) === Number(entry.rowNumber));
-      return workbook && sheet && record ? { workbookIdx, workbook, sheet, record, sheetIdx: Number(entry.sheetIdx), rowNumber: Number(entry.rowNumber) } : null;
-    };
-
     // Basic client-side gate only. Credentials are public because auth.js is served by GitHub Pages.
     window.UISAuth = {
       sessionKey: 'UIS_BASIC_AUTH_SESSION_V1',
