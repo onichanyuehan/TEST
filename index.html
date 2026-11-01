@@ -1158,7 +1158,7 @@ body {
   </div>
 
   <!-- Public account list for the basic deterrent-only login gate. -->
-  <script src="./auth.js?v=20261101-login-recovery-fix"></script>
+  <script src="./auth.js?v=20261031-loginfix"></script>
   <!-- ====================================================================== -->
   <!-- APPLICATION JAVASCRIPT ENGINE -->
   <!-- ====================================================================== -->
@@ -3061,10 +3061,16 @@ body {
         if (this._workspaceDbPromise) return this._workspaceDbPromise;
         this._workspaceDbPromise = new Promise((resolve, reject) => {
           if (!('indexedDB' in window)) { reject(new Error('IndexedDB is unavailable')); return; }
+          // Keep this schema version aligned with the UIS v3 local database.
+          // Some earlier builds opened this same database at v2, which makes
+          // IndexedDB reject the request when the browser already has v3 data.
+          // Opening at the current version preserves existing snapshots and stores.
           const request = indexedDB.open('UIS_LocalWorkspace', 3);
           request.onupgradeneeded = () => {
             const db = request.result;
             if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', { keyPath: 'id' });
+            // v3 global-search builds use this store. Create it on fresh installs
+            // or when upgrading older databases; never delete or recreate stores.
             if (!db.objectStoreNames.contains('searchIndexes')) db.createObjectStore('searchIndexes', { keyPath: 'id' });
           };
           request.onsuccess = () => {
@@ -8449,207 +8455,12 @@ handleSetScannedItemQty(rawAddedQty) {
       if(keepPosView)this.activeView='pos';
       this.renderAll();
     };
-    // -----------------------------------------------------------------------
-    // PERSISTENT WORKSPACE-WIDE SEARCH INDEX (IndexedDB, local-only)
-    // The workbook data remains the source of truth. This compact index stores
-    // stable workbook/sheet/row references and is rebuilt whenever inventory
-    // changes. Barcode matching rules are not changed.
-    // -----------------------------------------------------------------------
-    app.getGlobalSearchSignature = function() {
-      return JSON.stringify(this.getWorkspaceWorkbooks().map((wb, workbookIdx) => ({
-        workbookIdx,
-        filename: String(wb?.filename || ''),
-        revision: Number(wb?._uisIndexRevision || 0),
-        sheets: (wb?.worksheets || []).length,
-        records: (wb?.worksheets || []).reduce((sum, ws) => sum + (ws?.records?.length || 0), 0)
-      })));
-    };
-
-    app.persistGlobalSearchIndex = async function() {
-      try {
-        if (!this.getWorkspaceWorkbooks().length) return false;
-        const db = await this.openWorkspaceDatabase();
-        const entries = (this.inventoryCodeIndex?.allEntries || []).map(entry => ({
-          workbookIdx: entry.workbookIdx ?? 0,
-          workbookName: entry.workbookName || '',
-          sheetIdx: entry.sheetIdx,
-          sheetName: entry.sheetName || '',
-          rowNumber: entry.rowNumber,
-          matchedColIndex: entry.matchedColIndex,
-          matchedColLetter: entry.matchedColLetter || '',
-          matchedColumnName: entry.matchedColumnName || '',
-          columnCategory: entry.columnCategory || 'CODE',
-          storedCode: entry.storedCode || '',
-          normalizedCode: entry.normalizedCode || '',
-          codeColDisplay: entry.codeColDisplay || '—',
-          barcodeColDisplay: entry.barcodeColDisplay || '—',
-          skuDisplay: entry.skuDisplay || '',
-          itemName: entry.itemName || 'Unnamed Product',
-          price: entry.price || 'N/A',
-          currentFflzValue: entry.currentFflzValue ?? '',
-          currentFullUpcValue: entry.currentFullUpcValue || ''
-        }));
-        await new Promise((resolve, reject) => {
-          const tx = db.transaction('searchIndexes', 'readwrite');
-          tx.objectStore('searchIndexes').put({ id: 'global', version: 1, signature: this.getGlobalSearchSignature(), savedAt: Date.now(), entries });
-          tx.oncomplete = resolve;
-          tx.onerror = tx.onabort = () => reject(tx.error || new Error('Search index save failed'));
-        });
-        this._uisSearchIndexLastSavedAt = Date.now();
-        return true;
-      } catch (error) {
-        console.warn('UIS could not persist the local global search index:', error);
-        this._uisSearchIndexSaveError = error;
-        return false;
-      }
-    };
-
-    app.restoreGlobalSearchIndex = async function() {
-      try {
-        const db = await this.openWorkspaceDatabase();
-        const saved = await new Promise((resolve, reject) => {
-          const tx = db.transaction('searchIndexes', 'readonly');
-          const req = tx.objectStore('searchIndexes').get('global');
-          req.onsuccess = () => resolve(req.result || null);
-          req.onerror = () => reject(req.error || new Error('Search index read failed'));
-        });
-        if (!saved || saved.version !== 1 || saved.signature !== this.getGlobalSearchSignature() || !Array.isArray(saved.entries)) return false;
-        const books = this.getWorkspaceWorkbooks();
-        const globalIndex = new Map();
-        const allEntries = [];
-        for (const stored of saved.entries) {
-          const wb = books[Number(stored.workbookIdx)];
-          const ws = wb?.worksheets?.[Number(stored.sheetIdx)];
-          const rec = ws?.records?.find(row => Number(row.rowNumber) === Number(stored.rowNumber));
-          if (!wb || !ws || !rec) return false;
-          const entry = { ...stored };
-          // Resolve full row details lazily only when a user opens a match.
-          Object.defineProperty(entry, 'allRowFields', { enumerable: true, get: () => ws.headers.map(h => {
-            const cellObj = rec.cells?.[h.colIndex];
-            const val = h.isFflz ? rec.currentFflzValue : h.isFullUpc ? rec.currentFullUpcValue : (cellObj?.value ?? '');
-            return { colIndex: h.colIndex, colLetter: h.colLetter, cellRef: `${h.colLetter}${rec.rowNumber}`, headerName: h.name,
-              value: String(val ?? '').trim(), formula: cellObj?.formula || null, isFflz: h.isFflz, isFullUpc: h.isFullUpc };
-          }) });
-          allEntries.push(entry);
-          const lastSix = String(entry.normalizedCode || '').slice(-6);
-          const keys = new Set([entry.normalizedCode, lastSix]);
-          for (let len = 3; len <= Math.min(6, lastSix.length); len++) {
-            for (let start = 0; start <= lastSix.length - len; start++) keys.add(lastSix.slice(start, start + len));
-          }
-          for (const key of keys) {
-            if (!key) continue;
-            const bucket = globalIndex.get(key) || [];
-            if (!bucket.some(item => item.workbookIdx === entry.workbookIdx && item.sheetIdx === entry.sheetIdx && Number(item.rowNumber) === Number(entry.rowNumber))) bucket.push(entry);
-            globalIndex.set(key, bucket);
-          }
-        }
-        globalIndex.allEntries = allEntries;
-        this.codeIndex = globalIndex;
-        this.inventoryCodeIndex = globalIndex;
-        this._uisSearchIndexLastSavedAt = Number(saved.savedAt) || 0;
-        this._uisGlobalSearchIndexDirty = false;
-        return true;
-      } catch (error) {
-        console.warn('UIS could not restore the local global search index; rebuilding it:', error);
-        return false;
-      }
-    };
-
-    // Only changed workbooks invalidate the cached global index. The current
-    // workbook data remains authoritative, so a missing/stale cache is rebuilt.
-    const _uisMarkWorkbookModifiedIndex = app.markWorkbookModified.bind(app);
-    app.markWorkbookModified = function(workbookIdx) {
-      const idx = Number.isInteger(Number(workbookIdx)) ? Number(workbookIdx) : (this.activeWorkbookTabIndex || 0);
-      const wb = this.getWorkspaceWorkbooks()[idx];
-      if (wb) wb._uisIndexRevision = Number(wb._uisIndexRevision || 0) + 1;
-      this._uisGlobalSearchIndexDirty = true;
-      this._gridSearchIndexedWorkbook = null;
-      this._gridSearchCache = null;
-      this._gridSearchMatchedRows = null;
-      return _uisMarkWorkbookModifiedIndex(workbookIdx);
-    };
-
-    const _uisRebuildGlobalIndexBase = app.rebuildIndex.bind(app);
-    app.rebuildIndex = function() {
-      if (this._uisDeferGlobalIndexBuild) { this._uisGlobalIndexBuildPending = true; return; }
-      const result = _uisRebuildGlobalIndexBase();
-      this._uisGlobalSearchIndexDirty = false;
-      this.persistGlobalSearchIndex();
-      return result;
-    };
-
-    // During recovery, avoid immediately rebuilding the large index. Restore a
-    // matching persisted index first; if stale/missing, safely rebuild from data.
-    const _uisRestoreWorkspaceWithIndex = app.restoreWorkspaceIfAvailable.bind(app);
-    app.restoreWorkspaceIfAvailable = async function() {
-      this._uisDeferGlobalIndexBuild = true;
-      try { await _uisRestoreWorkspaceWithIndex(); }
-      finally { this._uisDeferGlobalIndexBuild = false; }
-      const restored = await this.restoreGlobalSearchIndex();
-      if (!restored) this.rebuildIndex();
-      this._uisGlobalIndexBuildPending = false;
-    };
-
-    // A scanner always checks freshness before lookup. Manual POS search and the
-    // worksheet-wide text search already aggregate all imported workbooks.
-    const _uisProcessScannedBarcodeIndex = app.handleProcessScannedBarcode.bind(app);
-    app.handleProcessScannedBarcode = function(rawBarcodeString) {
-      if (this._uisGlobalSearchIndexDirty) this.rebuildIndex();
-      return _uisProcessScannedBarcodeIndex(rawBarcodeString);
-    };
-    const _uisPosScannedBarcodeIndex = app.handlePosScannedBarcode.bind(app);
-    app.handlePosScannedBarcode = function(rawBarcodeString) {
-      if (this._uisGlobalSearchIndexDirty) this.rebuildIndex();
-      return _uisPosScannedBarcodeIndex(rawBarcodeString);
-    };
-
-    // The import-batch wrapper defers intermediate index rebuilds. Persist the
-    // final all-workbook index once the batch has completed.
-    const _uisRunImportBatchWithIndex = app._uisRunImportBatch.bind(app);
-    app._uisRunImportBatch = async function(task) {
-      const result = await _uisRunImportBatchWithIndex(task);
-      if (!this._uisImportBatchMode && this.getWorkspaceWorkbooks().length) {
-        this._uisGlobalSearchIndexDirty = false;
-        await this.persistGlobalSearchIndex();
-      }
-      return result;
-    };
-
-    // Keep source references stable for duplicate codes across different files.
-    app.resolveGlobalSearchEntry = function(entry) {
-      if (!entry) return null;
-      const workbookIdx = Number(entry.workbookIdx ?? 0);
-      const workbook = this.getWorkspaceWorkbooks()[workbookIdx];
-      const sheet = workbook?.worksheets?.[Number(entry.sheetIdx)];
-      const record = sheet?.records?.find(row => Number(row.rowNumber) === Number(entry.rowNumber));
-      return workbook && sheet && record ? { workbookIdx, workbook, sheet, record, sheetIdx: Number(entry.sheetIdx), rowNumber: Number(entry.rowNumber) } : null;
-    };
-
     // Basic client-side gate only. Credentials are public because auth.js is served by GitHub Pages.
     window.UISAuth = {
       sessionKey: 'UIS_BASIC_AUTH_SESSION_V1',
       sessionHours: 8,
       getConfig() {
         return window.UIS_AUTH_CONFIG && typeof window.UIS_AUTH_CONFIG === 'object' ? window.UIS_AUTH_CONFIG : null;
-      },
-      async refreshConfig() {
-        // GitHub Pages and an installed PWA can retain an older auth.js response.
-        // Load a versioned same-origin URL before checking credentials so the
-        // current account list is used without changing auth.js or its users.
-        return new Promise(resolve => {
-          const script = document.createElement('script');
-          script.src = new URL('./auth.js?v=20261101-login-recovery-fix', document.baseURI).href;
-          script.async = true;
-          script.onload = () => {
-            const config = this.getConfig();
-            resolve(!!(config && Array.isArray(config.users) && config.users.length));
-          };
-          script.onerror = () => {
-            const config = this.getConfig();
-            resolve(!!(config && Array.isArray(config.users) && config.users.length));
-          };
-          document.head.appendChild(script);
-        });
       },
       getCurrentUser() {
         try {
@@ -8731,27 +8542,22 @@ handleSetScannedItemQty(rawAddedQty) {
           if (message) message.textContent = 'No accounts were found in auth.js. Check that the users list contains active account entries.';
         }
 
-        form.addEventListener('submit', async event => {
+        form.addEventListener('submit', event => {
           event.preventDefault();
           if (message) message.textContent = '';
           if (submit) submit.disabled = true;
           try {
-            const configLoaded = await this.refreshConfig();
-            if (!configLoaded) {
-              if (message) message.textContent = 'UIS could not load the account list. Check that auth.js is uploaded beside index.html in the same GitHub Pages folder, then refresh.';
-              return;
-            }
             if (this.login(username.value, password.value)) {
               password.value = '';
               this.startApp();
             } else {
-              if (message) message.textContent = 'The account list loaded, but the username and password did not match. Check spelling and capitalization of the password.';
+              if (message) message.textContent = 'Login did not match an account in the loaded auth.js file. Check the username and password, then try again.';
               password.value = '';
               password.focus();
             }
           } catch (error) {
             console.error('UIS login failed:', error);
-            if (message) message.textContent = 'Sign-in could not complete. Refresh UIS and try again. If it continues, check that auth.js is beside index.html.';
+            if (message) message.textContent = 'The login script encountered an error. Refresh the page and try again.';
           } finally {
             if (submit) submit.disabled = false;
           }
