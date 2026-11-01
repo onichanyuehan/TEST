@@ -731,6 +731,12 @@ body {
     #pos-camera-overlay .pos-camera-card { width:min(100%,560px); border:1px solid rgba(56,214,176,.28); border-radius:24px; padding:14px; background:#0d1921; box-shadow:0 24px 90px rgba(0,0,0,.6); }
     #pos-camera-reader { position:relative; min-height:260px; overflow:hidden; border-radius:16px; background:#000; }
     #pos-camera-reader video { display:block; width:100%; height:100%; min-height:260px; max-height:58vh; object-fit:cover; }
+    #inventory-camera-overlay { position:fixed; inset:0; z-index:61; display:flex; align-items:center; justify-content:center; padding:16px; background:rgba(2,8,12,.88); backdrop-filter:blur(14px); }
+    #inventory-camera-overlay.hidden { display:none; }
+    #inventory-camera-overlay .inventory-camera-card { width:min(100%,560px); border:1px solid rgba(56,214,176,.28); border-radius:24px; padding:14px; background:#0d1921; box-shadow:0 24px 90px rgba(0,0,0,.6); }
+    #inventory-camera-reader { position:relative; min-height:260px; max-height:58vh; overflow:hidden; border-radius:16px; background:#000; }
+    #inventory-camera-reader video { display:block; width:100%; height:100%; min-height:260px; max-height:58vh; object-fit:cover; }
+    @media(max-width:640px) { #inventory-camera-overlay { padding:12px; } #inventory-camera-reader,#inventory-camera-reader video { min-height:240px; } }
     @media(max-width:640px) { #pos-hold-scan-button { width:70px;height:70px;bottom:calc(18px + env(safe-area-inset-bottom)); } }
     @media (max-width: 700px) {
       header.sticky.uis-app-header { grid-template-columns:40px minmax(0,1fr) auto; gap:7px; height:58px !important; min-height:58px; padding:0 9px !important; }
@@ -1315,14 +1321,23 @@ body {
               ).trim()
             : '';
 
-          // Build row-detail fields only when a user opens a matching record.
-          // Eagerly allocating one object per cell for every indexed row caused
-          // avoidable memory growth on large multi-workbook workspaces.
-          const makeAllRowFields = () => ws.headers.map(h => {
+          const allRowFields = ws.headers.map(h => {
             const cellObj = rec.cells[h.colIndex];
-            const val = h.isFflz ? rec.currentFflzValue : h.isFullUpc ? rec.currentFullUpcValue : (cellObj?.value ?? '');
-            return { colIndex: h.colIndex, colLetter: h.colLetter, cellRef: `${h.colLetter}${rec.rowNumber}`, headerName: h.name,
-              value: String(val ?? '').trim(), formula: cellObj?.formula || null, isFflz: h.isFflz, isFullUpc: h.isFullUpc };
+            const val = h.isFflz
+              ? rec.currentFflzValue
+              : h.isFullUpc
+              ? rec.currentFullUpcValue
+              : (cellObj?.value ?? '');
+            return {
+              colIndex: h.colIndex,
+              colLetter: h.colLetter,
+              cellRef: `${h.colLetter}${rec.rowNumber}`,
+              headerName: h.name,
+              value: String(val ?? '').trim(),
+              formula: cellObj?.formula || null,
+              isFflz: h.isFflz,
+              isFullUpc: h.isFullUpc
+            };
           });
 
           headersToIndex.forEach(h => {
@@ -1357,7 +1372,7 @@ body {
                 : 'N/A',
               currentFflzValue: rec.currentFflzValue,
               currentFullUpcValue: rec.currentFullUpcValue || '',
-              get allRowFields() { return makeAllRowFields(); }
+              allRowFields
             };
 
             allEntries.push(productEntry);
@@ -1385,19 +1400,8 @@ body {
 
       if (Array.isArray(index.allEntries) && index.allEntries.length > 0) {
         const rowEvaluations = new Map();
-        const scannedWindow = full.slice(-6);
-        const candidateSet = new Set();
-        // Index construction stores every 3-6 digit substring of each stored
-        // code's last-six window. Only inspect buckets relevant to this scan.
-        for (let len = Math.min(6, scannedWindow.length); len >= 3; len--) {
-          for (let start = 0; start <= scannedWindow.length - len; start++) {
-            const bucket = index.get(scannedWindow.slice(start, start + len));
-            if (bucket) bucket.forEach(entry => candidateSet.add(entry));
-          }
-        }
-        const candidates = candidateSet.size ? candidateSet : index.allEntries;
 
-        for (const entry of candidates) {
+        for (const entry of index.allEntries) {
           const score = computeCappedSuffixScore(full, entry.normalizedCode);
           if (!score) continue;
 
@@ -3057,11 +3061,10 @@ body {
         if (this._workspaceDbPromise) return this._workspaceDbPromise;
         this._workspaceDbPromise = new Promise((resolve, reject) => {
           if (!('indexedDB' in window)) { reject(new Error('IndexedDB is unavailable')); return; }
-          const request = indexedDB.open('UIS_LocalWorkspace', 3);
+          const request = indexedDB.open('UIS_LocalWorkspace', 2);
           request.onupgradeneeded = () => {
             const db = request.result;
             if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', { keyPath: 'id' });
-            if (!db.objectStoreNames.contains('searchIndexes')) db.createObjectStore('searchIndexes', { keyPath: 'id' });
           };
           request.onsuccess = () => {
             const db = request.result;
@@ -3095,12 +3098,12 @@ body {
         this._workspaceSaveRevision = (this._workspaceSaveRevision || 0) + 1;
         this._workspaceSaveError = null;
         clearTimeout(this._workspaceSaveTimer);
-        // Coalesce rapid edits into one IndexedDB snapshot. Explicit flushes,
-        // workbook switches, and page-hide handlers still force an immediate save.
+        // Persist on the next task turn. This is intentionally not a long debounce:
+        // inventory edits should reach IndexedDB as soon as the current UI event ends.
         this._workspaceSaveTimer = setTimeout(() => {
           this._workspaceSaveTimer = null;
           this.persistWorkspaceSnapshot().catch(err => console.warn('UIS autosave failed:', err));
-        }, 650);
+        }, 0);
       },
 
       async persistWorkspaceSnapshot() {
@@ -5635,10 +5638,20 @@ handleSetScannedItemQty(rawAddedQty) {
         this._scanPurpose = purpose === 'pos' ? 'pos' : 'inventory';
         const requestedPurpose = this._scanPurpose;
         const isInventoryHoldStart = requestedPurpose === 'inventory' && inventoryHoldGeneration != null;
-        this._scanHostId = this._scanPurpose === 'pos' ? 'pos-camera-reader' : 'fflz-barcode-reader';
-        this._scanOverlayId = this._scanPurpose === 'pos' ? 'pos-camera-scan-overlay' : 'fflz-scan-overlay';
-        if (this._scanPurpose === 'inventory') this.activeView = 'scanner';
-        else {
+        this._scanHostId = this._scanPurpose === 'pos' ? 'pos-camera-reader' : (isInventoryHoldStart ? 'inventory-camera-reader' : 'fflz-barcode-reader');
+        this._scanOverlayId = this._scanPurpose === 'pos' ? 'pos-camera-scan-overlay' : (isInventoryHoldStart ? 'inventory-camera-scan-overlay' : 'fflz-scan-overlay');
+        if (this._scanPurpose === 'inventory') {
+          this.activeView = 'scanner';
+          if (isInventoryHoldStart) {
+            let modal = document.getElementById('inventory-camera-overlay');
+            if (!modal) {
+              modal = document.createElement('div'); modal.id = 'inventory-camera-overlay'; modal.className = 'hidden';
+              modal.innerHTML = `<div class="inventory-camera-card"><div class="flex items-center justify-between gap-3 mb-3"><div><div class="text-[10px] uppercase tracking-[.18em] text-emerald-300 font-bold">Inventory barcode scanner</div><div id="inventory-camera-status" class="text-sm font-semibold text-white mt-1">Starting camera…</div></div><span class="text-[10px] text-neutral-400">Release sphere to stop</span></div><div id="inventory-camera-reader"></div><div class="text-center text-[11px] text-neutral-400 mt-3">Aim at a product barcode. Release the floating scanner to close the camera.</div></div>`;
+              document.body.appendChild(modal);
+            }
+            modal.classList.remove('hidden');
+          }
+        } else {
           let modal = document.getElementById('pos-camera-overlay');
           if (!modal) {
             modal = document.createElement('div'); modal.id = 'pos-camera-overlay'; modal.className = 'hidden';
@@ -5657,10 +5670,12 @@ handleSetScannedItemQty(rawAddedQty) {
         const panel = document.getElementById('camera-scanner-panel');
         const btn = document.getElementById('btn-toggle-scanner');
         const label = document.getElementById('btn-scanner-label');
-        if (panel) panel.classList.remove('hidden');
-        if (label) label.textContent = 'Close';
-        if (btn) btn.className = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition cursor-pointer bg-rose-500 text-white hover:bg-rose-400';
-        if (this._scanPurpose === 'inventory') this.renderAll();
+        // Hold-to-scan inventory opens a lightweight floating overlay. Avoid renderAll()
+        // here: rebuilding the large workbook UI before getUserMedia can stall mobile devices.
+        if (!isInventoryHoldStart && panel) panel.classList.remove('hidden');
+        if (!isInventoryHoldStart && label) label.textContent = 'Close';
+        if (!isInventoryHoldStart && btn) btn.className = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition cursor-pointer bg-rose-500 text-white hover:bg-rose-400';
+        if (this._scanPurpose === 'inventory' && !isInventoryHoldStart) this.renderAll();
 
         try {
           const host = document.getElementById(this._scanHostId || 'fflz-barcode-reader');
@@ -5688,7 +5703,7 @@ handleSetScannedItemQty(rawAddedQty) {
           if (isInventoryHoldStart && (!this._inventoryHoldActive || inventoryHoldGeneration !== this._inventoryHoldGeneration)) {
             requestedStream.getTracks().forEach(track => { try { track.stop(); } catch (_) {} });
             this.isScannerOpen = false;
-            const stalePanel = document.getElementById('camera-scanner-panel'); if (stalePanel) stalePanel.classList.add('hidden');
+            const staleOverlay = document.getElementById('inventory-camera-overlay'); if (staleOverlay) staleOverlay.classList.add('hidden');
             return;
           }
           if (requestedPurpose === 'pos' && !this._scanHoldActive) {
@@ -5736,6 +5751,8 @@ handleSetScannedItemQty(rawAddedQty) {
           if (isInventoryHoldStart && (!this._inventoryHoldActive || inventoryHoldGeneration !== this._inventoryHoldGeneration)) { await this.stopCameraScanner(false); return; }
           if (!this._scanStream) { await this.stopCameraScanner(false); return; }
           if (badge) badge.textContent = `${this._scanDecoder === 'NATIVE' ? 'Native BarcodeDetector' : 'ZXing fallback'} • Adaptive ROI • QR disabled`;
+          const inventoryStatus = document.getElementById('inventory-camera-status');
+          if (isInventoryHoldStart && inventoryStatus) inventoryStatus.textContent = `Scanning · ${this._scanDecoder === 'NATIVE' ? 'Browser decoder' : 'ZXing decoder'}`;
           const track = this._scanStream.getVideoTracks()[0];
           try { const caps = track.getCapabilities?.(); this.torchSupported = !!caps?.torch; if (caps?.focusMode?.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (_) { this.torchSupported = false; }
           this.torchOn = false;
@@ -5864,10 +5881,12 @@ handleSetScannedItemQty(rawAddedQty) {
             if (caption) caption.textContent = 'HOLD TO SCAN';
           }
         }
+        const wasInventoryHold = this._scanPurpose === 'inventory' && !!document.getElementById('inventory-camera-overlay');
         const panel=document.getElementById('camera-scanner-panel'), btn=document.getElementById('btn-toggle-scanner'), label=document.getElementById('btn-scanner-label');
         if(panel) panel.classList.add('hidden');
-        const host=document.getElementById(this._scanHostId || 'fflz-barcode-reader'); if(host) { host.innerHTML = wasPosScanner ? '' : 'Starting rear camera...'; }
+        const host=document.getElementById(this._scanHostId || 'fflz-barcode-reader'); if(host) { host.innerHTML = (wasPosScanner || wasInventoryHold) ? '' : 'Starting rear camera...'; }
         if (wasPosScanner) { const modal=document.getElementById('pos-camera-overlay'); if(modal) modal.classList.add('hidden'); }
+        if (wasInventoryHold) { const modal=document.getElementById('inventory-camera-overlay'); if(modal) modal.classList.add('hidden'); }
         this._scanPurpose = 'inventory'; this._scanHostId = 'fflz-barcode-reader'; this._scanOverlayId = 'fflz-scan-overlay';
         if(label) label.textContent='Scan';
         if(btn) btn.className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition cursor-pointer bg-white text-black hover:bg-neutral-200';
@@ -8174,10 +8193,7 @@ handleSetScannedItemQty(rawAddedQty) {
         const partial = buildCodeIndex(wb.worksheets, workbookIdx, wb.filename || `Workbook ${workbookIdx+1}`);
         (partial.allEntries||[]).forEach(entry => {
           allEntries.push(entry);
-          const lastSix=String(entry.normalizedCode||'').slice(-6);
-          const keys=new Set([entry.normalizedCode,lastSix]);
-          for(let len=3;len<=Math.min(6,lastSix.length);len++) for(let start=0;start<=lastSix.length-len;start++) keys.add(lastSix.slice(start,start+len));
-          keys.forEach(key => {
+          [entry.normalizedCode, entry.normalizedCode?.length>6 ? entry.normalizedCode.slice(-6) : ''].forEach(key => {
             if (!key) return;
             const bucket = globalIndex.get(key)||[];
             if (!bucket.some(p=>p.workbookIdx===entry.workbookIdx&&p.sheetIdx===entry.sheetIdx&&p.rowNumber===entry.rowNumber)) bucket.push(entry);
@@ -8432,304 +8448,6 @@ handleSetScannedItemQty(rawAddedQty) {
       if(keepPosView)this.activeView='pos';
       this.renderAll();
     };
-    // Performance safeguards for large workspaces. Imports remain sequential and
-    // each workbook still receives its normal verified local save.
-    app._uisImportBatchMode = false;
-    app._uisImportYield = () => new Promise(resolve => setTimeout(resolve, 0));
-    const _uisRebuildIndexForPerf = app.rebuildIndex.bind(app);
-    app.rebuildIndex = function() {
-      if (this._uisImportBatchMode) { this._uisIndexNeedsRebuild = true; return; }
-      return _uisRebuildIndexForPerf();
-    };
-    const _uisRenderAllForPerf = app.renderAll.bind(app);
-    app.renderAll = function() {
-      if (this._uisImportBatchMode) { this._uisRenderNeedsRefresh = true; return; }
-      return _uisRenderAllForPerf();
-    };
-    app._uisRunImportBatch = async function(task) {
-      const wasBatch = this._uisImportBatchMode;
-      const oldRender = this.renderAll;
-      const oldRebuild = this.rebuildIndex;
-      this._uisImportBatchMode = true;
-      this._uisIndexNeedsRebuild = false;
-      this._uisRenderNeedsRefresh = false;
-      try {
-        return await task();
-      } finally {
-        this._uisImportBatchMode = wasBatch;
-        if (!wasBatch) {
-          this._uisIndexNeedsRebuild = false;
-          this._uisRenderNeedsRefresh = false;
-          _uisRebuildIndexForPerf();
-          _uisRenderAllForPerf();
-          await this.flushWorkspaceSave().catch(err => { console.error('UIS final batch save failed:', err); this.showToast('Final batch save needs attention. Download a JSON backup.', 'error'); });
-        }
-      }
-    };
-    const _uisHandleFileUploadPerf = app.handleFileUpload.bind(app);
-    app.handleFileUpload = async function(e) {
-      const files = Array.from(e?.target?.files || []);
-      if (e?.target) e.target.value = '';
-      if (!files.length) return;
-      return this._uisRunImportBatch(async () => {
-        for (let i = 0; i < files.length; i++) {
-          await this.handleSingleWorkbookUpload(files[i]);
-          await this._uisImportYield();
-        }
-      });
-    };
-    const _uisHandleZipUploadPerf = app.handleZipUpload.bind(app);
-    app.handleZipUpload = async function(e) {
-      return this._uisRunImportBatch(async () => {
-        await _uisHandleZipUploadPerf(e);
-        await this._uisImportYield();
-      });
-    };
-
-    // Keep undo/redo bounded by both operation count and estimated memory.
-    // This avoids dozens of full-workbook clones accumulating on low-RAM phones.
-    app.historyLimit = 10;
-    app.historyMemoryBudgetBytes = 48 * 1024 * 1024;
-    app._uisEstimateSnapshotBytes = function(snapshot) {
-      let bytes = 4096;
-      const books = snapshot?.workbookSnapshots?.map(x => x.workbook) || (snapshot?.workbook ? [snapshot.workbook] : []);
-      for (const wb of books) {
-        bytes += Number(wb?.originalBuffer?.byteLength || 0) + Number(wb?.workingBuffer?.byteLength || 0);
-        for (const ws of wb?.worksheets || []) {
-          bytes += (ws.records?.length || 0) * 96;
-          for (const rec of ws.records || []) bytes += (rec.cells?.length || 0) * 40;
-        }
-      }
-      return bytes;
-    };
-    app._uisTrimHistory = function() {
-      const combined = [...(this.undoStack || []), ...(this.redoStack || [])];
-      let total = combined.reduce((sum, item) => sum + (item?._uisEstimatedBytes || this._uisEstimateSnapshotBytes(item)), 0);
-      while ((this.undoStack.length + this.redoStack.length) > this.historyLimit || total > this.historyMemoryBudgetBytes) {
-        const stack = this.undoStack.length ? this.undoStack : this.redoStack;
-        if (!stack.length) break;
-        const removed = stack.shift();
-        total -= removed?._uisEstimatedBytes || this._uisEstimateSnapshotBytes(removed);
-      }
-    };
-    const _uisPushUndoPerf = app.pushUndoState.bind(app);
-    app.pushUndoState = function(label='Edit') {
-      _uisPushUndoPerf(label);
-      const item = this.undoStack[this.undoStack.length - 1];
-      if (item) item._uisEstimatedBytes = this._uisEstimateSnapshotBytes(item);
-      this._uisTrimHistory();
-    };
-    const _uisUndoPerf = app.undoEdit.bind(app);
-    app.undoEdit = function() { _uisUndoPerf(); const item=this.redoStack[this.redoStack.length-1]; if(item && !item._uisEstimatedBytes)item._uisEstimatedBytes=this._uisEstimateSnapshotBytes(item); this._uisTrimHistory(); };
-    const _uisRedoPerf = app.redoEdit.bind(app);
-    app.redoEdit = function() { _uisRedoPerf(); const item=this.undoStack[this.undoStack.length-1]; if(item && !item._uisEstimatedBytes)item._uisEstimatedBytes=this._uisEstimateSnapshotBytes(item); this._uisTrimHistory(); };
-
-    // Lightweight performance panel. Values are estimates where browser APIs do
-    // not expose exact per-tab memory usage.
-    app.openPerformancePanel = async function() {
-      let panel = document.getElementById('uis-performance-panel');
-      if (!panel) {
-        panel = document.createElement('section'); panel.id = 'uis-performance-panel';
-        panel.style.cssText = 'position:fixed;z-index:9998;right:12px;top:76px;width:min(360px,calc(100vw - 24px));max-height:70vh;overflow:auto;background:#101a22;color:#e5eef3;border:1px solid #36505d;border-radius:14px;padding:14px;box-shadow:0 18px 55px #0009;font:12px system-ui';
-        document.body.appendChild(panel);
-      }
-      const books=this.getWorkspaceWorkbooks();
-      let records=0, sheets=0, bytes=0, indexed=0;
-      for(const wb of books){
-        bytes += Number(wb?.originalBuffer?.byteLength||0)+Number(wb?.workingBuffer?.byteLength||0);
-        for(const ws of wb?.worksheets||[]){sheets++;records += ws.records?.length||0;}
-      }
-      indexed = this.inventoryCodeIndex?.allEntries?.length || 0;
-      let storage='Not available';
-      try { const est=await navigator.storage?.estimate?.(); if(est){const mb=n=>(Number(n||0)/1048576).toFixed(1);storage=`${mb(est.usage)} MB used / ${est.quota?mb(est.quota)+' MB quota':'quota unavailable'}`;} } catch(_) {}
-      const mb=n=>(n/1048576).toFixed(1);
-      panel.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong style="font-size:14px">UIS Performance</strong><button type="button" id="uis-perf-close" style="padding:5px 9px;border:1px solid #456;border-radius:8px">Close</button></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">${[['Workbooks',books.length],['Worksheets',sheets],['Records',records.toLocaleString()],['Indexed codes',indexed.toLocaleString()],['Workbook buffers',mb(bytes)+' MB'],['Undo / redo',(this.undoStack?.length||0)+' / '+(this.redoStack?.length||0)]].map(([k,v])=>`<div style="background:#1a2933;border-radius:9px;padding:9px"><div style="color:#9fb2bd">${k}</div><strong style="font-size:15px">${v}</strong></div>`).join('')}</div><p style="margin:10px 0 0;color:#a9bdc7">Browser storage: ${storage}</p><p style="margin:8px 0 0;color:#f4c979">Buffer size is not total RAM usage. Actual capacity depends on your phone and browser.</p><p style="margin:8px 0 0;color:#9fb2bd">Local-only workspace. No cloud upload.</p>`;
-      panel.querySelector('#uis-perf-close')?.addEventListener('click',()=>panel.remove());
-    };
-    const perfButton=document.createElement('button');
-    perfButton.type='button'; perfButton.id='uis-performance-button'; perfButton.textContent='Performance';
-    perfButton.title='View UIS workspace size and performance indicators';
-    perfButton.style.cssText='position:fixed;right:12px;bottom:14px;z-index:9997;padding:9px 12px;border-radius:999px;background:#19352f;color:#8df0d0;border:1px solid #3b806f;font:600 11px system-ui;box-shadow:0 5px 18px #0007';
-    perfButton.addEventListener('click',()=>app.openPerformancePanel());
-    document.addEventListener('DOMContentLoaded',()=>{if(!document.getElementById('uis-performance-button'))document.body.appendChild(perfButton);},{once:true});
-    if(document.readyState!=='loading' && !document.getElementById('uis-performance-button')) document.body.appendChild(perfButton);
-
-    // -----------------------------------------------------------------------
-    // PERSISTENT WORKSPACE-WIDE SEARCH INDEX (IndexedDB, local-only)
-    // The workbook data remains the source of truth. This compact index stores
-    // stable workbook/sheet/row references and is rebuilt whenever inventory
-    // changes. Barcode matching rules are not changed.
-    // -----------------------------------------------------------------------
-    app.getGlobalSearchSignature = function() {
-      return JSON.stringify(this.getWorkspaceWorkbooks().map((wb, workbookIdx) => ({
-        workbookIdx,
-        filename: String(wb?.filename || ''),
-        revision: Number(wb?._uisIndexRevision || 0),
-        sheets: (wb?.worksheets || []).length,
-        records: (wb?.worksheets || []).reduce((sum, ws) => sum + (ws?.records?.length || 0), 0)
-      })));
-    };
-
-    app.persistGlobalSearchIndex = async function() {
-      try {
-        if (!this.getWorkspaceWorkbooks().length) return false;
-        const db = await this.openWorkspaceDatabase();
-        const entries = (this.inventoryCodeIndex?.allEntries || []).map(entry => ({
-          workbookIdx: entry.workbookIdx ?? 0,
-          workbookName: entry.workbookName || '',
-          sheetIdx: entry.sheetIdx,
-          sheetName: entry.sheetName || '',
-          rowNumber: entry.rowNumber,
-          matchedColIndex: entry.matchedColIndex,
-          matchedColLetter: entry.matchedColLetter || '',
-          matchedColumnName: entry.matchedColumnName || '',
-          columnCategory: entry.columnCategory || 'CODE',
-          storedCode: entry.storedCode || '',
-          normalizedCode: entry.normalizedCode || '',
-          codeColDisplay: entry.codeColDisplay || '—',
-          barcodeColDisplay: entry.barcodeColDisplay || '—',
-          skuDisplay: entry.skuDisplay || '',
-          itemName: entry.itemName || 'Unnamed Product',
-          price: entry.price || 'N/A',
-          currentFflzValue: entry.currentFflzValue ?? '',
-          currentFullUpcValue: entry.currentFullUpcValue || ''
-        }));
-        await new Promise((resolve, reject) => {
-          const tx = db.transaction('searchIndexes', 'readwrite');
-          tx.objectStore('searchIndexes').put({ id: 'global', version: 1, signature: this.getGlobalSearchSignature(), savedAt: Date.now(), entries });
-          tx.oncomplete = resolve;
-          tx.onerror = tx.onabort = () => reject(tx.error || new Error('Search index save failed'));
-        });
-        this._uisSearchIndexLastSavedAt = Date.now();
-        return true;
-      } catch (error) {
-        console.warn('UIS could not persist the local global search index:', error);
-        this._uisSearchIndexSaveError = error;
-        return false;
-      }
-    };
-
-    app.restoreGlobalSearchIndex = async function() {
-      try {
-        const db = await this.openWorkspaceDatabase();
-        const saved = await new Promise((resolve, reject) => {
-          const tx = db.transaction('searchIndexes', 'readonly');
-          const req = tx.objectStore('searchIndexes').get('global');
-          req.onsuccess = () => resolve(req.result || null);
-          req.onerror = () => reject(req.error || new Error('Search index read failed'));
-        });
-        if (!saved || saved.version !== 1 || saved.signature !== this.getGlobalSearchSignature() || !Array.isArray(saved.entries)) return false;
-        const books = this.getWorkspaceWorkbooks();
-        const globalIndex = new Map();
-        const allEntries = [];
-        for (const stored of saved.entries) {
-          const wb = books[Number(stored.workbookIdx)];
-          const ws = wb?.worksheets?.[Number(stored.sheetIdx)];
-          const rec = ws?.records?.find(row => Number(row.rowNumber) === Number(stored.rowNumber));
-          if (!wb || !ws || !rec) return false;
-          const entry = { ...stored };
-          // Resolve full row details lazily only when a user opens a match.
-          Object.defineProperty(entry, 'allRowFields', { enumerable: true, get: () => ws.headers.map(h => {
-            const cellObj = rec.cells?.[h.colIndex];
-            const val = h.isFflz ? rec.currentFflzValue : h.isFullUpc ? rec.currentFullUpcValue : (cellObj?.value ?? '');
-            return { colIndex: h.colIndex, colLetter: h.colLetter, cellRef: `${h.colLetter}${rec.rowNumber}`, headerName: h.name,
-              value: String(val ?? '').trim(), formula: cellObj?.formula || null, isFflz: h.isFflz, isFullUpc: h.isFullUpc };
-          }) });
-          allEntries.push(entry);
-          const lastSix = String(entry.normalizedCode || '').slice(-6);
-          const keys = new Set([entry.normalizedCode, lastSix]);
-          for (let len = 3; len <= Math.min(6, lastSix.length); len++) {
-            for (let start = 0; start <= lastSix.length - len; start++) keys.add(lastSix.slice(start, start + len));
-          }
-          for (const key of keys) {
-            if (!key) continue;
-            const bucket = globalIndex.get(key) || [];
-            if (!bucket.some(item => item.workbookIdx === entry.workbookIdx && item.sheetIdx === entry.sheetIdx && Number(item.rowNumber) === Number(entry.rowNumber))) bucket.push(entry);
-            globalIndex.set(key, bucket);
-          }
-        }
-        globalIndex.allEntries = allEntries;
-        this.codeIndex = globalIndex;
-        this.inventoryCodeIndex = globalIndex;
-        this._uisSearchIndexLastSavedAt = Number(saved.savedAt) || 0;
-        this._uisGlobalSearchIndexDirty = false;
-        return true;
-      } catch (error) {
-        console.warn('UIS could not restore the local global search index; rebuilding it:', error);
-        return false;
-      }
-    };
-
-    // Only changed workbooks invalidate the cached global index. The current
-    // workbook data remains authoritative, so a missing/stale cache is rebuilt.
-    const _uisMarkWorkbookModifiedIndex = app.markWorkbookModified.bind(app);
-    app.markWorkbookModified = function(workbookIdx) {
-      const idx = Number.isInteger(Number(workbookIdx)) ? Number(workbookIdx) : (this.activeWorkbookTabIndex || 0);
-      const wb = this.getWorkspaceWorkbooks()[idx];
-      if (wb) wb._uisIndexRevision = Number(wb._uisIndexRevision || 0) + 1;
-      this._uisGlobalSearchIndexDirty = true;
-      this._gridSearchIndexedWorkbook = null;
-      this._gridSearchCache = null;
-      this._gridSearchMatchedRows = null;
-      return _uisMarkWorkbookModifiedIndex(workbookIdx);
-    };
-
-    const _uisRebuildGlobalIndexBase = app.rebuildIndex.bind(app);
-    app.rebuildIndex = function() {
-      if (this._uisDeferGlobalIndexBuild) { this._uisGlobalIndexBuildPending = true; return; }
-      const result = _uisRebuildGlobalIndexBase();
-      this._uisGlobalSearchIndexDirty = false;
-      this.persistGlobalSearchIndex();
-      return result;
-    };
-
-    // During recovery, avoid immediately rebuilding the large index. Restore a
-    // matching persisted index first; if stale/missing, safely rebuild from data.
-    const _uisRestoreWorkspaceWithIndex = app.restoreWorkspaceIfAvailable.bind(app);
-    app.restoreWorkspaceIfAvailable = async function() {
-      this._uisDeferGlobalIndexBuild = true;
-      try { await _uisRestoreWorkspaceWithIndex(); }
-      finally { this._uisDeferGlobalIndexBuild = false; }
-      const restored = await this.restoreGlobalSearchIndex();
-      if (!restored) this.rebuildIndex();
-      this._uisGlobalIndexBuildPending = false;
-    };
-
-    // A scanner always checks freshness before lookup. Manual POS search and the
-    // worksheet-wide text search already aggregate all imported workbooks.
-    const _uisProcessScannedBarcodeIndex = app.handleProcessScannedBarcode.bind(app);
-    app.handleProcessScannedBarcode = function(rawBarcodeString) {
-      if (this._uisGlobalSearchIndexDirty) this.rebuildIndex();
-      return _uisProcessScannedBarcodeIndex(rawBarcodeString);
-    };
-    const _uisPosScannedBarcodeIndex = app.handlePosScannedBarcode.bind(app);
-    app.handlePosScannedBarcode = function(rawBarcodeString) {
-      if (this._uisGlobalSearchIndexDirty) this.rebuildIndex();
-      return _uisPosScannedBarcodeIndex(rawBarcodeString);
-    };
-
-    // The import-batch wrapper defers intermediate index rebuilds. Persist the
-    // final all-workbook index once the batch has completed.
-    const _uisRunImportBatchWithIndex = app._uisRunImportBatch.bind(app);
-    app._uisRunImportBatch = async function(task) {
-      const result = await _uisRunImportBatchWithIndex(task);
-      if (!this._uisImportBatchMode && this.getWorkspaceWorkbooks().length) {
-        this._uisGlobalSearchIndexDirty = false;
-        await this.persistGlobalSearchIndex();
-      }
-      return result;
-    };
-
-    // Keep source references stable for duplicate codes across different files.
-    app.resolveGlobalSearchEntry = function(entry) {
-      if (!entry) return null;
-      const workbookIdx = Number(entry.workbookIdx ?? 0);
-      const workbook = this.getWorkspaceWorkbooks()[workbookIdx];
-      const sheet = workbook?.worksheets?.[Number(entry.sheetIdx)];
-      const record = sheet?.records?.find(row => Number(row.rowNumber) === Number(entry.rowNumber));
-      return workbook && sheet && record ? { workbookIdx, workbook, sheet, record, sheetIdx: Number(entry.sheetIdx), rowNumber: Number(entry.rowNumber) } : null;
-    };
-
     // Basic client-side gate only. Credentials are public because auth.js is served by GitHub Pages.
     window.UISAuth = {
       sessionKey: 'UIS_BASIC_AUTH_SESSION_V1',
@@ -8849,6 +8567,112 @@ handleSetScannedItemQty(rawAddedQty) {
     } else {
       UISAuth.init();
     }
+
+    // POS barcode collisions: show selectable inventory rows instead of rejecting
+    // ambiguous matches. The camera is stopped by the existing one-scan-per-hold
+    // flow after this handler returns true.
+    app.handlePosScannedBarcode = function(rawBarcodeString) {
+      const code = normalizeCodeString(rawBarcodeString);
+      if (!code) return false;
+      const now = Date.now();
+      if (code === this._posScanLastCode && now - (this._posScanLastAt || 0) < 1100) return false;
+      this._posScanLastCode = code;
+      this._posScanLastAt = now;
+      const match = findByBarcode(code, this.codeIndex || this.inventoryCodeIndex);
+      if (!match?.products?.length) {
+        this.showToast(`POS: barcode not found (${code}).`, 'error');
+        playScanSound('error');
+        return false;
+      }
+      if (match.products.length > 1) {
+        this.posBarcodeMatchQuery = code;
+        this.posBarcodeMatchChoices = match.products.map(product => ({
+          key: `${product.workbookIdx ?? 0}:${product.sheetIdx}:${product.rowNumber}`,
+          barcode: String(product.storedCode || product.currentFullUpcValue || product.normalizedCode || '').trim(),
+          matchedColumn: String(product.matchedColumnName || 'Barcode'),
+          workbookName: String(product.workbookName || ''),
+          sheetName: String(product.sheetName || '')
+        }));
+        this.renderPosView(document.getElementById('main-view-container'));
+        playScanSound('collision');
+        this.showToast(`${match.products.length} products match this barcode. Choose the correct product.`, 'success');
+        // Return true so the POS camera closes after presenting the choices.
+        return true;
+      }
+      const product = match.products[0];
+      const key = `${product.workbookIdx ?? 0}:${product.sheetIdx}:${product.rowNumber}`;
+      const item = this.getOperationItem(key);
+      if (!item) {
+        this.showToast('POS: matched inventory row is unavailable.', 'error');
+        return false;
+      }
+      if (!Number.isFinite(item.qty) || item.qty <= 0) {
+        this.showToast(`POS: ${item.itemName} is out of stock.`, 'error');
+        playScanSound('error');
+        return false;
+      }
+      this.addPosItem(item.key);
+      playScanSound('success');
+      try { if (navigator.vibrate) navigator.vibrate(45); } catch (_) {}
+      this.showToast(`Added to sale: ${item.itemName} · ${item.workbookName}. Scanner stopped. Hold the sphere again for the next item.`, 'success');
+      return true;
+    };
+
+    app.selectPosBarcodeMatch = function(key) {
+      const item = this.getOperationItem(String(key));
+      if (!item) {
+        this.showToast('The selected inventory record is no longer available. Refresh the POS results and scan again.', 'error');
+        this.posBarcodeMatchChoices = null;
+        this.renderPosView(document.getElementById('main-view-container'));
+        return;
+      }
+      if (!Number.isFinite(item.qty) || item.qty <= 0) {
+        this.showToast(`${item.itemName} has no available stock and cannot be added.`, 'error');
+        return;
+      }
+      this.posBarcodeMatchChoices = null;
+      this.posBarcodeMatchQuery = '';
+      this.addPosItem(item.key);
+      playScanSound('success');
+      try { if (navigator.vibrate) navigator.vibrate(45); } catch (_) {}
+      this.showToast(`Added to sale: ${item.itemName} · ${item.workbookName}.`, 'success');
+    };
+
+    app.closePosBarcodeMatchChoices = function() {
+      this.posBarcodeMatchChoices = null;
+      this.posBarcodeMatchQuery = '';
+      this.renderPosView(document.getElementById('main-view-container'));
+    };
+
+    app.renderPosBarcodeMatchChoices = function(container) {
+      if (!container) return;
+      const old = container.querySelector('#pos-barcode-match-choices');
+      if (old) old.remove();
+      if (!Array.isArray(this.posBarcodeMatchChoices) || !this.posBarcodeMatchChoices.length) return;
+      const itemsByKey = new Map(this.getOperationItems().map(item => [item.key, item]));
+      const money = value => `₱${Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const cards = this.posBarcodeMatchChoices.map(choice => {
+        const item = itemsByKey.get(choice.key);
+        if (!item) return '';
+        const stockKnown = Number.isFinite(item.qty);
+        const canAdd = stockKnown && item.qty > 0;
+        const barcode = choice.barcode || (item.codes || []).join(' · ') || 'No barcode recorded';
+        const price = Number.isFinite(item.unitPrice) && item.unitPrice >= 0 ? money(item.unitPrice) : 'Not set';
+        return `<article class="rounded-xl border border-white/10 bg-[#111d25] p-3 flex flex-col gap-2">
+          <div class="flex items-start justify-between gap-3"><div class="min-w-0"><div class="text-sm font-bold text-white break-words">${escapeHtml(item.itemName || 'Unnamed item')}</div><div class="mt-1 text-[10px] text-neutral-400 break-words">${escapeHtml(item.workbookName || choice.workbookName || 'Workbook')} · ${escapeHtml(item.sheetName || choice.sheetName || 'Worksheet')} · Row ${Number(item.rowNumber) || '—'}</div></div><span class="shrink-0 rounded-lg px-2 py-1 text-[10px] font-semibold ${canAdd ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'}">${canAdd ? 'In stock' : 'Unavailable'}</span></div>
+          <div class="grid grid-cols-2 gap-2 text-xs"><div class="rounded-lg bg-black/25 p-2"><div class="text-[10px] text-neutral-500">Barcode</div><div class="mt-1 font-mono text-neutral-200 break-all">${escapeHtml(barcode)}</div><div class="mt-1 text-[10px] text-neutral-500">Matched: ${escapeHtml(choice.matchedColumn || 'Barcode')}</div></div><div class="rounded-lg bg-black/25 p-2"><div class="text-[10px] text-neutral-500">Price</div><div class="mt-1 font-semibold text-emerald-300">${escapeHtml(price)}</div><div class="mt-2 text-[10px] text-neutral-500">Available stock</div><div class="mt-1 font-semibold text-white">${stockKnown ? Number(item.qty).toLocaleString() : 'Unknown'}</div></div></div>
+          <button type="button" onclick="app.selectPosBarcodeMatch('${escapeHtml(item.key)}')" ${canAdd ? '' : 'disabled'} class="w-full rounded-lg bg-emerald-500 px-3 py-2.5 text-xs font-bold text-slate-950 disabled:cursor-not-allowed disabled:opacity-35">${canAdd ? 'Choose this product' : 'Cannot add · no valid stock'}</button>
+        </article>`;
+      }).join('');
+      container.insertAdjacentHTML('beforeend', `<div id="pos-barcode-match-choices" class="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="pos-barcode-match-title"><section class="w-full max-w-xl max-h-[88vh] overflow-hidden rounded-2xl border border-emerald-400/25 bg-[#0b151c] shadow-2xl"><header class="flex items-start justify-between gap-3 border-b border-white/10 p-4"><div class="min-w-0"><h3 id="pos-barcode-match-title" class="text-base font-bold text-white">Multiple barcode matches</h3><p class="mt-1 text-xs text-neutral-400">Barcode ${escapeHtml(this.posBarcodeMatchQuery || '')} matched ${this.posBarcodeMatchChoices.length} inventory records. Select the correct product.</p></div><button type="button" onclick="app.closePosBarcodeMatchChoices()" class="rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-300">Close</button></header><div class="max-h-[70vh] space-y-2 overflow-y-auto p-3">${cards || '<div class="p-5 text-center text-xs text-neutral-400">The matching inventory records are no longer available.</div>'}</div></section></div>`);
+    };
+
+    const _uisRenderPosWithBarcodeChoices = app.renderPosView.bind(app);
+    app.renderPosView = function(container) {
+      _uisRenderPosWithBarcodeChoices(container);
+      this.renderPosBarcodeMatchChoices(container);
+    };
+
   </script>
   <script>
     // Register the UIS PWA service worker from the page itself.
