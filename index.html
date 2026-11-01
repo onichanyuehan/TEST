@@ -9522,7 +9522,7 @@ handleSetScannedItemQty(rawAddedQty) {
       workbookIndex:wi, filename:wb.filename || `Workbook ${wi+1}`,
       worksheets:(wb.worksheets || []).map((ws, si) => ({
         sheetIndex:si, name:ws.sheetName, headers:(ws.headers || []).map(h=>({name:h.name,colIndex:h.colIndex,colLetter:h.colLetter,isManagedQuantity:!!h.isFflz,isManagedBarcode:!!h.isFullUpc})),
-        records:(ws.records || []).map(rec=>({rowNumber:rec.rowNumber,managedQuantity:rec.currentFflzValue,managedBarcode:rec.currentFullUpcValue,cells:(rec.cells || []).map((c,ci)=>({colIndex:ci,value:c?.value ?? '',formula:c?.formula || null}))}))
+        records:(ws.records || []).map(rec=>({rowNumber:rec.rowNumber,managedQuantity:rec.currentFflzValue,managedBarcode:rec.currentFullUpcValue,cells:(()=>{const raw=rec.cells;const entries=Array.isArray(raw)?raw.map((cell,index)=>[index,cell]):(raw&&typeof raw==='object'?Object.entries(raw):[]);return entries.map(([key,cell])=>({colIndex:Number.isInteger(Number(key))?Number(key):key,value:cell&&typeof cell==='object'?(cell.value??''):cell??'',formula:cell&&typeof cell==='object'?(cell.formula||null):null}));})()}))
       })),
       inventoryHistory:wb.inventoryHistory || [], auditLogs:wb._uisSession?.auditLogs || wb.initialAuditLogs || [],
       metadata:redact(wb._uisSession || {})
