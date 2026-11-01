@@ -784,18 +784,6 @@ body {
     #uis-auth-logout { padding: 7px 10px; border: 1px solid rgba(255,255,255,.12); border-radius: 9px; background: rgba(20,20,20,.72); color: #d4d4d4; font-size: 11px; white-space: nowrap; }
   </style>
 
-
-  <style id="uis-local-assistant-styles">
-    .uis-ai-panel{background:linear-gradient(145deg,rgba(17,34,43,.97),rgba(10,20,28,.98));border:1px solid rgba(85,223,184,.18);border-radius:20px;box-shadow:0 18px 55px rgba(0,0,0,.22)}
-    .uis-ai-tab{border:1px solid rgba(148,163,184,.18);border-radius:999px;padding:9px 14px;font-size:11px;font-weight:700;color:#9fb0bb;background:rgba(255,255,255,.035)}
-    .uis-ai-tab[aria-selected="true"]{background:#55dfb8;color:#06231e;border-color:#55dfb8}
-    .uis-ai-answer{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}
-    .uis-ai-result{border:1px solid rgba(148,163,184,.14);background:rgba(255,255,255,.035);border-radius:12px;padding:11px}
-    .uis-ai-chip{border:1px solid rgba(85,223,184,.25);border-radius:999px;padding:8px 11px;color:#9be9d2;font-size:10px;background:rgba(56,214,176,.06)}
-    .uis-ai-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 9px;font-size:10px;font-weight:700;background:rgba(56,214,176,.1);color:#8be7ce}
-    @media(max-width:640px){.uis-ai-panel{border-radius:16px}.uis-ai-tab{padding:9px 11px}}
-  </style>
-
 </head>
 <body class="min-h-screen bg-[#0d0d0d] text-[#ececec] flex flex-col selection:bg-emerald-500/30 selection:text-emerald-200 overflow-x-hidden uis-auth-locked">
 
@@ -809,7 +797,14 @@ body {
       <label for="uis-auth-username" class="block text-xs text-neutral-300 mb-2">Username</label>
       <input id="uis-auth-username" name="username" type="text" autocomplete="username" required maxlength="80" class="mb-4" />
       <label for="uis-auth-password" class="block text-xs text-neutral-300 mb-2">Password</label>
-      <input id="uis-auth-password" name="password" type="password" autocomplete="current-password" required maxlength="200" class="mb-5" />
+      <input id="uis-auth-password" name="password" type="password" autocomplete="current-password" required maxlength="200" class="mb-4" />
+      <div class="mb-4 rounded-xl border border-emerald-500/20 bg-emerald-950/20 p-3">
+        <label for="uis-gemini-login-key" class="block text-xs font-semibold text-emerald-200 mb-2">Gemini API key <span class="font-normal text-neutral-400">(optional)</span></label>
+        <input id="uis-gemini-login-key" type="password" autocomplete="off" spellcheck="false" placeholder="AQ.Ab8R… or your Gemini key" maxlength="300" class="w-full mb-2" />
+        <label class="flex items-start gap-2 text-[11px] text-neutral-300 mb-2"><input id="uis-gemini-login-remember" type="checkbox" class="mt-0.5" /> Remember this key on this device</label>
+        <label class="flex items-start gap-2 text-[11px] text-neutral-300"><input id="uis-gemini-login-consent" type="checkbox" class="mt-0.5" /> Enable Gemini for this session. Relevant inventory or recovery details may be sent to Google when I ask the assistant.</label>
+        <p class="mt-2 text-[10px] leading-relaxed text-neutral-500">You can leave this blank and configure Gemini later in Settings. A key saved on this device is accessible to anyone using this same browser profile.</p>
+      </div>
       <button id="uis-auth-submit" type="submit">Sign in</button>
       <p id="uis-auth-message" class="min-h-5 mt-3 text-xs text-rose-300" role="alert" aria-live="polite"></p>
       <div class="mt-4 rounded-lg border border-amber-500/30 bg-amber-950/30 p-3 text-[11px] leading-relaxed text-amber-200">
@@ -8560,6 +8555,13 @@ handleSetScannedItemQty(rawAddedQty) {
           if (submit) submit.disabled = true;
           try {
             if (this.login(username.value, password.value)) {
+              const geminiKeyInput = document.getElementById('uis-gemini-login-key');
+              const geminiRemember = document.getElementById('uis-gemini-login-remember');
+              const geminiConsent = document.getElementById('uis-gemini-login-consent');
+              const enteredGeminiKey = String(geminiKeyInput?.value || '').trim();
+              if (enteredGeminiKey && window.UISGemini) window.UISGemini.setKey(enteredGeminiKey, !!geminiRemember?.checked);
+              if (window.UISGemini) window.UISGemini.setSessionConsent(!!geminiConsent?.checked);
+              if (geminiKeyInput) geminiKeyInput.value = '';
               password.value = '';
               this.startApp();
             } else {
@@ -8693,156 +8695,6 @@ handleSetScannedItemQty(rawAddedQty) {
     };
 
   </script>
-  <script id="uis-local-assistant-v1">
-    // UIS Local Assistant: diagnostics and inventory analysis run entirely in this browser.
-    // This module makes no network requests and does not alter the IndexedDB schema.
-    (() => {
-      if (!window.app || app.__uisLocalAssistantInstalled) return;
-      app.__uisLocalAssistantInstalled = true;
-      app.uisAssistantTab = 'inventory';
-      app.uisAssistantQuery = '';
-      app.uisAssistantLastQuery = '';
-      app.uisAssistantLastAnswer = null;
-      app.uisRecoveryReport = null;
-      app.uisRecoveryBusy = false;
-
-      const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-      const fmt = value => Number(value || 0).toLocaleString();
-      const money = value => `₱${Number(value || 0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
-      const validSnapshot = snap => !!(snap?.workbook?.originalBuffer && Array.isArray(snap.workbook.worksheets) && snap.workbook.worksheets.length > 0 && snap.workbook.worksheets.every(ws => ws && Array.isArray(ws.headers) && Array.isArray(ws.records)));
-
-      const _uisAssistantRenderNav = app.renderNavTabs.bind(app);
-      app.renderNavTabs = function() {
-        _uisAssistantRenderNav();
-        const container = document.getElementById('nav-tabs-container');
-        if (!container || container.querySelector('[data-uis-assistant-nav]')) return;
-        const active = this.activeView === 'assistant';
-        container.insertAdjacentHTML('beforeend', `<div class="pt-2"><div class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-neutral-500">Assistant</div><button data-uis-assistant-nav onclick="app.switchView('assistant')" aria-current="${active?'page':'false'}" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold ${active?'bg-emerald-500/15 text-emerald-200':'text-neutral-400 hover:text-white hover:bg-white/5'}"><i data-lucide="sparkles" class="w-4 h-4 ${active?'text-emerald-300':'text-neutral-400'}"></i><span>UIS Local Assistant</span></button></div>`);
-        if (window.lucide) lucide.createIcons();
-      };
-
-      const _uisAssistantRenderMain = app.renderMainView.bind(app);
-      app.renderMainView = function() {
-        if (this.activeView !== 'assistant') return _uisAssistantRenderMain();
-        const container = document.getElementById('main-view-container');
-        const title = document.getElementById('secondary-stage-title');
-        if (!container) return;
-        document.body.classList.remove('uis-edge-view','uis-pos-view');
-        if (title) title.textContent = 'UIS Local Assistant';
-        this.renderUISLocalAssistant(container);
-        if (window.lucide) lucide.createIcons();
-      };
-
-      app.renderUISLocalAssistant = function(container) {
-        const tab = this.uisAssistantTab || 'inventory';
-        const report = this.uisRecoveryReport;
-        const workbooks = this.getWorkspaceWorkbooks?.() || [];
-        const inventoryReady = workbooks.some(wb => wb?.worksheets?.length);
-        const answer = this.uisAssistantLastAnswer;
-        const answerHtml = answer ? `<div class="uis-ai-result mt-3"><div class="text-[10px] font-bold uppercase tracking-wider text-emerald-300">Local analysis</div><div class="uis-ai-answer mt-2 text-xs text-neutral-200">${esc(answer.text)}</div>${answer.items?.length?`<div class="mt-3 grid gap-2">${answer.items.map(item=>`<div class="uis-ai-result"><div class="text-xs font-semibold text-white">${esc(item.title)}</div><div class="mt-1 text-[10px] text-neutral-400">${esc(item.meta)}</div></div>`).join('')}</div>`:''}<div class="mt-3 text-[10px] text-neutral-500">Based on ${fmt(answer.rowCount)} local inventory record(s). No workbook data was sent over the internet.</div></div>` : '';
-        const reportHtml = report ? `<div class="uis-ai-result mt-3"><div class="flex items-center justify-between gap-2"><div class="text-xs font-bold text-white">Local recovery check</div><span class="uis-ai-status">${report.error?'Check needs attention':report.hasSnapshot?'Snapshot found':'No snapshot found'}</span></div><div class="mt-3 grid grid-cols-2 gap-2 text-[11px]
-          "><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">Database</div><div class="mt-1 text-white">${esc(report.dbName||'Unavailable')}</div></div><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">DB version</div><div class="mt-1 text-white">${esc(report.version??'Unknown')}</div></div><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">Latest snapshot</div><div class="mt-1 text-white">${report.latestValid?'Valid':report.latestExists?'Present, structure not verified':'Not found'}</div></div><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">Previous snapshot</div><div class="mt-1 text-white">${report.previousValid?'Valid':report.previousExists?'Present, structure not verified':'Not found'}</div></div><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">Open workbooks</div><div class="mt-1 text-white">${fmt(report.openWorkbookCount)}</div></div><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">Browser storage</div><div class="mt-1 text-white">${esc(report.storageText||'Not available')}</div></div></div><div class="uis-ai-answer mt-3 text-xs text-neutral-300">${esc(report.guidance)}</div>${report.error?`<div class="mt-2 text-[10px] text-rose-300">${esc(report.error)}</div>`:''}${report.retryAllowed?'<button onclick="app.retryUISLocalRecovery()" class="mt-3 w-full rounded-xl bg-amber-300 px-4 py-2.5 text-xs font-bold text-slate-950">Retry existing local recovery</button>':''}<div class="mt-2 text-[10px] text-neutral-500">Read-only inspection. No database stores or snapshots were deleted, replaced, or migrated.</div></div>` : '';
-        container.innerHTML = `<div class="space-y-4 pb-8">
-          <section class="uis-ai-panel p-4 sm:p-5"><div class="flex items-start gap-3"><div class="w-10 h-10 rounded-xl bg-emerald-400/10 text-emerald-300 flex items-center justify-center shrink-0"><i data-lucide="sparkles" class="w-5 h-5"></i></div><div class="min-w-0"><div class="text-sm font-bold text-white">UIS Local Assistant</div><p class="mt-1 text-[11px] leading-relaxed text-neutral-400">Two tools, one privacy boundary: local recovery diagnostics and inventory analysis. Runs in this browser without uploading workbooks or enabling cloud sync.</p></div></div><div class="mt-4 flex flex-wrap gap-2"><span class="uis-ai-status">Local only</span><span class="uis-ai-status">No API key</span><span class="uis-ai-status">No cloud sync</span></div></section>
-          <div class="flex flex-wrap gap-2"><button class="uis-ai-tab" aria-selected="${tab==='inventory'}" onclick="app.setUISAssistantTab('inventory')">Inventory assistant</button><button class="uis-ai-tab" aria-selected="${tab==='recovery'}" onclick="app.setUISAssistantTab('recovery')">Recovery assistant</button></div>
-          ${tab==='inventory'?`<section class="uis-ai-panel p-4 sm:p-5"><div class="flex items-center justify-between gap-2"><div><h3 class="text-sm font-bold text-white">Ask about your inventory</h3><p class="mt-1 text-[10px] text-neutral-400">Searches all currently open workbooks and their recorded history.</p></div><span class="text-[10px] text-neutral-500">${fmt(workbooks.length)} workbook(s)</span></div>${inventoryReady?`<form class="mt-4 space-y-2" onsubmit="app.askUISLocalAssistant(event)"><label class="block text-[10px] font-semibold text-neutral-300" for="uis-ai-query">Your question</label><textarea id="uis-ai-query" rows="3" maxlength="500" class="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-3 text-xs text-white" placeholder="Example: Which items are low in stock across all workbooks?" oninput="app.uisAssistantQuery=this.value">${esc(this.uisAssistantQuery||'')}</textarea><button type="submit" class="w-full rounded-xl bg-emerald-500 px-4 py-3 text-xs font-bold text-slate-950">Analyze local inventory</button></form><div class="mt-3 flex flex-wrap gap-2"><button class="uis-ai-chip" onclick="app.askUISLocalAssistantPrompt('Show low-stock items')">Low stock</button><button class="uis-ai-chip" onclick="app.askUISLocalAssistantPrompt('Find duplicate barcodes')">Duplicate barcodes</button><button class="uis-ai-chip" onclick="app.askUISLocalAssistantPrompt('Show out-of-stock items')">Out of stock</button><button class="uis-ai-chip" onclick="app.askUISLocalAssistantPrompt('Summarize stock movement this month')">Stock movement</button><button class="uis-ai-chip" onclick="app.askUISLocalAssistantPrompt('Show inventory valuation')">Inventory value</button></div>${answerHtml||'<div class="mt-4 rounded-xl border border-dashed border-white/10 p-4 text-center text-[11px] text-neutral-500">Ask a question or tap a suggested topic. Analysis stays on this device.</div>'}</section>`:`<section class="uis-ai-panel p-5 text-center"><i data-lucide="file-spreadsheet" class="mx-auto h-8 w-8 text-neutral-500"></i><div class="mt-2 text-sm font-semibold text-white">No open workbook yet</div><p class="mt-1 text-xs text-neutral-400">Import a workbook or recover your local workspace to start inventory analysis.</p><button onclick="document.getElementById('file-upload-input').click()" class="mt-3 rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-bold text-slate-950">Import workbook</button></section>`}`:`<section class="uis-ai-panel p-4 sm:p-5"><div class="flex items-start gap-3"><div class="w-9 h-9 rounded-xl bg-amber-400/10 text-amber-200 flex items-center justify-center"><i data-lucide="shield-check" class="w-5 h-5"></i></div><div><h3 class="text-sm font-bold text-white">Local recovery assistant</h3><p class="mt-1 text-[10px] leading-relaxed text-neutral-400">Checks the existing UIS IndexedDB database and its latest/previous snapshots. It does not clear storage, downgrade the database, or overwrite a visible workspace.</p></div></div><div class="mt-4 flex flex-wrap gap-2"><button onclick="app.runUISRecoveryCheck()" ${this.uisRecoveryBusy?'disabled':''} class="rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-bold text-slate-950 disabled:opacity-50">${this.uisRecoveryBusy?'Checking…':'Run safe recovery check'}</button><button onclick="app.downloadWorkspaceBackup?.()" ${!this.workbook?'disabled':''} class="rounded-xl border border-white/15 px-4 py-2.5 text-xs font-semibold text-neutral-200 disabled:opacity-40">Export JSON backup</button></div>${reportHtml||'<div class="mt-4 rounded-xl border border-dashed border-white/10 p-4 text-center text-[11px] text-neutral-500">Run a read-only check to inspect local recovery status.</div>'}<div class="mt-4 rounded-xl border border-amber-400/20 bg-amber-950/20 p-3 text-[10px] leading-relaxed text-amber-100">If your workspace is currently visible, export a JSON backup before replacing UIS. Do not clear browser/site data or uninstall the PWA while recovery is uncertain.</div></section>`}
-          <p class="px-1 text-[10px] leading-relaxed text-neutral-600">Capability note: this build uses local rules, indexed workbook data, and deterministic diagnostics. It is not connected to a generative AI model. A real model connection would require a separately secured service and explicit approval before any selected inventory data leaves this device.</p>
-        </div>`;
-      };
-
-      app.setUISAssistantTab = function(tab) { this.uisAssistantTab = tab==='recovery'?'recovery':'inventory'; this.renderMainView(); };
-      app.askUISLocalAssistantPrompt = function(query) { this.uisAssistantQuery=String(query||''); this.askUISLocalAssistant(); };
-      app.askUISLocalAssistant = function(event) {
-        if (event?.preventDefault) event.preventDefault();
-        const query=String(document.getElementById('uis-ai-query')?.value ?? this.uisAssistantQuery ?? '').trim();
-        if (!query) { this.showToast('Enter an inventory question first.','error'); return; }
-        this.uisAssistantQuery=query; this.uisAssistantLastQuery=query;
-        try {
-          const data=this.getInventoryInsights();
-          const rows=Array.isArray(data?.rows)?data.rows:[];
-          const q=query.toLowerCase();
-          let items=[], text='';
-          const addRows=(list, titlePrefix='')=>{items=list.slice(0,15).map(r=>({title:`${titlePrefix}${r.itemName||'Unnamed item'} · ${r.qty===null?'Unknown':fmt(r.qty)} on hand`,meta:`${r.workbookName} · ${r.sheetName} · Row ${r.rowNumber}${r.codes?.length?' · '+r.codes.join(', '):''}`}));};
-          if (/duplicate|collision|same barcode/.test(q)) {
-            const groups=data.duplicates||[]; text=`Found ${groups.length} barcode value(s) used by more than one inventory record across the open workbooks.`;
-            items=groups.slice(0,15).map(g=>({title:`Barcode ${g.code}`,meta:g.matches.map(r=>`${r.itemName} · ${r.workbookName} / ${r.sheetName} / row ${r.rowNumber}`).join(' | ')}));
-          } else if (/low\s*stock|reorder|running low/.test(q)) {
-            const list=data.low||[]; text=`${list.length} record(s) are at or below the current low-stock threshold of ${fmt(this.lowStockThreshold)} units. This is a threshold alert, not an automatic purchase recommendation.`; addRows(list);
-          } else if (/out of stock|zero stock|no stock|stockout/.test(q)) {
-            const list=data.zero||[]; text=`${list.length} record(s) currently have zero units recorded.`; addRows(list);
-          } else if (/valuation|inventory value|worth|total value|cost value/.test(q)) {
-            const a=this.getAdvancedInventoryAnalytics(); text=a.valued?.length?`Estimated inventory value is ${money(a.totalInventoryValue)} across ${fmt(a.valued.length)} records with usable unit-cost data. ${fmt(a.unvaluedRecords)} records could not be valued because a usable cost field was not found.`:`No usable unit-cost fields were detected, so UIS cannot calculate inventory value from the open workbooks.`;
-            items=(a.valued||[]).slice().sort((x,y)=>y.inventoryValue-x.inventoryValue).slice(0,12).map(r=>({title:`${r.itemName} · ${money(r.inventoryValue)}`,meta:`${r.workbookName} · ${r.sheetName} · ${fmt(r.qty)} units × ${money(r.unitCost)}`}));
-          } else if (/aging|old stock|slow moving|days old/.test(q)) {
-            const a=this.getAdvancedInventoryAnalytics(); const aging=a.aging||{}; text=`Stock age is based on recorded receipt dates when available, otherwise recognized date fields in the workbook. ${fmt(aging.days90plus?.length||0)} record(s) are 90+ days old; ${fmt(aging.noDate?.length||0)} have no usable date. Age alone does not prove an item is obsolete.`;
-            items=(aging.days90plus||[]).slice(0,15).map(r=>({title:`${r.itemName} · ${r.ageDays} days`,meta:`${r.workbookName} · ${r.sheetName} · ${fmt(r.qty)} units · ${r.ageBasis}`}));
-          } else if (/supplier|vendor/.test(q)) {
-            const a=this.getAdvancedInventoryAnalytics(); text=`Found ${a.suppliers?.length||0} supplier group(s), including unassigned records. Values are only calculated where unit cost is available.`;
-            items=(a.suppliers||[]).slice(0,15).map(r=>({title:r.supplier,meta:`${fmt(r.records)} records · ${fmt(r.units)} units · ${money(r.inventoryValue)} known value · ${r.lowStock} low-stock`}));
-          } else if (/movement|issued|received|last 24|last 7|last 30|this month|activity/.test(q)) {
-            const periods=this.getMovementPeriodSummary(); const p=/24|today|day/.test(q)?periods.day:/7|week/.test(q)?periods.week:periods.month;
-            text=`${p?.label||'Recent period'}: ${fmt(p?.transactions||0)} recorded movement event(s), ${fmt(p?.received||0)} unit(s) received, and ${fmt(p?.issued||0)} unit(s) issued. This reflects recorded inventory movements, not necessarily completed sales.`;
-            const a=this.getAdvancedInventoryAnalytics(); items=(a.rows||[]).filter(r=>r.issued90>0).sort((x,y)=>y.issued90-x.issued90).slice(0,12).map(r=>({title:`${r.itemName} · ${fmt(r.issued90)} issued in 90 days`,meta:`${r.workbookName} · ${r.sheetName} · ${r.daysOfCover===null?'Days of cover unavailable':r.daysOfCover.toFixed(1)+' days estimated cover'}`}));
-          } else if (/summary|overview|how many|total inventory|all items/.test(q)) {
-            text=`Workspace overview: ${fmt(rows.length)} inventory record(s), ${fmt(data.totalQty)} total units, ${fmt((data.low||[]).length)} low-stock record(s), ${fmt((data.zero||[]).length)} zero-stock record(s), and ${(data.duplicates||[]).length} duplicate barcode value(s) across ${fmt(this.getWorkspaceWorkbooks().length)} workbook(s).`;
-            addRows((data.low||[]).slice(0,12),'Low stock · ');
-          } else {
-            const terms=q.split(/\s+/).filter(t=>t.length>1 && !/^(show|find|search|what|which|where|item|items|product|products|please|the|for|with|from|across|workbook|workbooks)$/.test(t));
-            const matches=rows.filter(r=>{const hay=[r.itemName,r.workbookName,r.sheetName,...(r.codes||[]),r.rowNumber].join(' ').toLowerCase();return terms.length?terms.some(t=>hay.includes(t)):false;});
-            text=matches.length?`Found ${matches.length} matching inventory record(s) across the open workbooks. Results are local matches against item names, workbook/worksheet names, barcodes, and row numbers.`:`No matching inventory records were found. Try an item name, barcode, workbook name, or a supported topic such as low stock, duplicate barcodes, stock movement, supplier, or valuation.`;
-            addRows(matches);
-          }
-          this.uisAssistantLastAnswer={text,items,rowCount:rows.length};
-        } catch(error) {
-          this.uisAssistantLastAnswer={text:`I could not complete this analysis: ${error?.message||error}. No workbook data was changed.`,items:[],rowCount:0};
-        }
-        this.renderMainView();
-      };
-
-      app.runUISRecoveryCheck = async function() {
-        this.uisRecoveryBusy=true; this.renderMainView();
-        try {
-          if (!('indexedDB' in window)) throw new Error('This browser does not provide IndexedDB.');
-          const db=await this.openWorkspaceDatabase();
-          const report={dbName:db.name,version:db.version,stores:Array.from(db.objectStoreNames||[]),openWorkbookCount:(this.getWorkspaceWorkbooks?.()||[]).length,
-            latestExists:false,previousExists:false,latestValid:false,previousValid:false,hasSnapshot:false,error:null,storageText:'Not available'};
-          if (!db.objectStoreNames.contains('snapshots')) throw new Error('The database opened, but the snapshots store is missing. Do not delete the database.');
-          const snapshots=await new Promise((resolve,reject)=>{
-            const tx=db.transaction('snapshots','readonly'),store=tx.objectStore('snapshots'); let latest,previous;
-            const a=store.get('latest'),b=store.get('previous'); let done=0;
-            const finish=()=>{if(++done===2)resolve({latest,previous});};
-            a.onsuccess=()=>{latest=a.result||null;finish();}; b.onsuccess=()=>{previous=b.result||null;finish();};
-            a.onerror=b.onerror=()=>reject(tx.error||new Error('Could not read local snapshots.'));
-            tx.onabort=()=>reject(tx.error||new Error('Snapshot inspection transaction was interrupted.'));
-          });
-          report.latestExists=!!snapshots.latest; report.previousExists=!!snapshots.previous;
-          report.latestValid=validSnapshot(snapshots.latest); report.previousValid=validSnapshot(snapshots.previous);
-          report.hasSnapshot=report.latestValid||report.previousValid;
-          if (navigator.storage?.estimate) {
-            const est=await navigator.storage.estimate().catch(()=>null);
-            if (est?.quota) report.storageText=`${(est.usage/1024/1024).toFixed(1)} MB used / ${(est.quota/1024/1024).toFixed(0)} MB quota`;
-          }
-          if (this._workspaceSaveError) report.guidance=`The database and snapshot records were readable. UIS also reports a recent save error: ${this._workspaceSaveError.message||this._workspaceSaveError}. Export a JSON backup if the workbook is visible, then inspect browser storage availability before attempting another save.`;
-          else if (report.latestValid) report.guidance='A structurally valid latest snapshot is present. If your workbook is visible, export a fresh JSON backup now. If the workspace is missing, do not clear site data; retry recovery only when no workbook is currently loaded.';
-          else if (report.previousValid) report.guidance='The latest snapshot is not structurally valid, but the previous snapshot appears valid. If no workbook is currently loaded, use the retry option below to let UIS attempt its existing previous-snapshot recovery path. Export a JSON backup immediately if it loads.';
-          else if (report.latestExists||report.previousExists) report.guidance='Snapshot records exist, but neither passed the basic structural check. Do not overwrite or delete them. Export any currently visible data and preserve the browser profile while investigating.';
-          else report.guidance='No usable latest or previous snapshot was found in the opened database. This check cannot recreate data that is no longer present. Do not clear browser storage; check whether the original browser profile/device is being used and look for an existing JSON backup.';
-          report.retryAllowed=!this.workbook && !this.getWorkspaceWorkbooks().length && report.hasSnapshot;
-          this.uisRecoveryReport=report;
-        } catch(error) {
-          this.uisRecoveryReport={dbName:'UIS_LocalWorkspace',version:'Unknown',openWorkbookCount:(this.getWorkspaceWorkbooks?.()||[]).length,storageText:'Not available',error:error?.message||String(error),guidance:'The local database could not be inspected. Do not clear browser/site data or uninstall the PWA. If any workbook is visible, export a JSON backup before making changes. This diagnostic did not delete or repair anything.'};
-        } finally { this.uisAssistantBusy=false; this.uisRecoveryBusy=false; this.renderMainView(); }
-      };
-
-      app.retryUISLocalRecovery = async function() {
-        if (this.workbook || this.getWorkspaceWorkbooks().length) { this.showToast('A workbook is already loaded. Export a backup first; automatic restore is blocked to protect visible data.','error'); return; }
-        if (!this.uisRecoveryReport?.retryAllowed) { this.showToast('No structurally valid recovery snapshot is available to retry.','error'); return; }
-        try { await this.restoreWorkspaceIfAvailable(); this.renderAll(); if (this.workbook) { this.showToast('UIS recovery completed. Export a fresh JSON backup now.','success'); this.downloadWorkspaceBackup?.(); } else this.showToast('UIS could not restore a workbook from the available snapshots.','error'); }
-        catch(error) { this.showToast(`Recovery retry failed: ${error?.message||error}`,'error'); }
-      };
-    })();
-  </script>
-
   <script>
     // Register the UIS PWA service worker from the page itself.
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
@@ -8852,6 +8704,563 @@ handleSetScannedItemQty(rawAddedQty) {
         });
       });
     }
+  </script>
+
+  <script>
+(() => {
+  if (window.__UIS_ASSISTANT_INSTALLED__) return;
+  window.__UIS_ASSISTANT_INSTALLED__ = true;
+
+  const escapeText = value => String(value ?? '').replace(/[&<>\"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[ch]));
+  const money = value => '₱' + Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const formatQty = value => Number(value || 0).toLocaleString('en-PH', { maximumFractionDigits: 2 });
+  const safeDate = value => {
+    const d = value instanceof Date ? value : new Date(value);
+    return Number.isFinite(d.getTime()) ? d.toLocaleString() : 'Unknown date';
+  };
+
+  app._uisAssistantMode = 'inventory';
+  app._uisAssistantHistory = [];
+
+  app.installUISAssistant = function() {
+    if (document.getElementById('uis-assistant-launcher')) return;
+    const style = document.createElement('style');
+    style.id = 'uis-assistant-styles';
+    style.textContent = `
+      #uis-assistant-launcher{position:fixed;right:18px;bottom:18px;z-index:79;border:1px solid rgba(52,211,153,.45);background:#064e3b;color:#ecfdf5;border-radius:999px;padding:12px 16px;font:700 12px Inter,system-ui,sans-serif;box-shadow:0 12px 34px rgba(0,0,0,.4);display:flex;align-items:center;gap:9px}
+      #uis-assistant-launcher:focus-visible,#uis-assistant-panel button:focus-visible,#uis-assistant-panel input:focus-visible{outline:2px solid #6ee7b7;outline-offset:3px}
+      #uis-assistant-panel{position:fixed;z-index:80;right:14px;bottom:78px;width:min(460px,calc(100vw - 28px));height:min(690px,calc(100dvh - 112px));display:none;flex-direction:column;overflow:hidden;border:1px solid rgba(52,211,153,.25);border-radius:18px;background:#0b1115;color:#e5e7eb;box-shadow:0 22px 70px rgba(0,0,0,.6);font-family:Inter,system-ui,sans-serif}
+      #uis-assistant-panel.uis-open{display:flex}
+      #uis-assistant-panel .uis-ai-header{padding:14px 15px;border-bottom:1px solid rgba(255,255,255,.1);background:linear-gradient(135deg,#10251f,#111827)}
+      #uis-assistant-panel .uis-ai-tabs{display:flex;gap:7px;margin-top:12px}
+      #uis-assistant-panel .uis-ai-tabs button{flex:1;border:1px solid rgba(255,255,255,.12);border-radius:9px;padding:8px 7px;background:rgba(0,0,0,.25);font-size:11px;color:#aeb9c2}
+      #uis-assistant-panel .uis-ai-tabs button[aria-pressed="true"]{background:rgba(16,185,129,.16);border-color:rgba(52,211,153,.45);color:#a7f3d0}
+      #uis-assistant-panel .uis-ai-notice{margin:10px 12px 0;padding:8px 10px;border:1px solid rgba(148,163,184,.16);border-radius:9px;background:rgba(148,163,184,.06);font-size:10px;line-height:1.45;color:#aab5be}
+      #uis-assistant-panel .uis-ai-messages{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;overscroll-behavior:contain}
+      #uis-assistant-panel .uis-ai-message{max-width:94%;padding:10px 11px;border-radius:12px;font-size:12px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+      #uis-assistant-panel .uis-ai-message.assistant{align-self:flex-start;background:#17232b;border:1px solid rgba(255,255,255,.07);color:#e2e8f0}
+      #uis-assistant-panel .uis-ai-message.user{align-self:flex-end;background:#064e3b;border:1px solid rgba(52,211,153,.22);color:#ecfdf5}
+      #uis-assistant-panel .uis-ai-message strong{color:#a7f3d0}
+      #uis-assistant-panel .uis-ai-quick{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 10px}
+      #uis-assistant-panel .uis-ai-quick button{border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:7px 9px;background:#121b21;color:#cbd5e1;font-size:10px}
+      #uis-assistant-panel .uis-ai-inputbar{display:flex;gap:8px;padding:11px;border-top:1px solid rgba(255,255,255,.1);background:#0d151a}
+      #uis-assistant-panel .uis-ai-inputbar input{min-width:0;flex:1;border:1px solid rgba(255,255,255,.14);border-radius:10px;padding:11px 12px;background:#050a0d;color:#f8fafc;font-size:12px}
+      #uis-assistant-panel .uis-ai-inputbar button{border:0;border-radius:10px;padding:0 14px;background:#10b981;color:#042f2e;font-size:11px;font-weight:800}
+      #uis-assistant-panel .uis-ai-action{display:inline-flex;align-items:center;margin-top:8px;margin-right:6px;border:1px solid rgba(52,211,153,.35);border-radius:8px;padding:7px 9px;background:rgba(16,185,129,.12);color:#a7f3d0;font-size:10px;font-weight:700}
+      @media(max-width:520px){#uis-assistant-launcher{right:12px;bottom:12px;padding:11px 13px}#uis-assistant-panel{right:8px;bottom:68px;width:calc(100vw - 16px);height:min(76dvh,680px)}}
+    `;
+    document.head.appendChild(style);
+    document.body.insertAdjacentHTML('beforeend', `
+      <button id="uis-assistant-launcher" type="button" aria-controls="uis-assistant-panel" aria-expanded="false"><span aria-hidden="true">✦</span> UIS Assistant</button>
+      <section id="uis-assistant-panel" role="dialog" aria-modal="false" aria-label="UIS local assistant">
+        <header class="uis-ai-header">
+          <div class="flex items-start justify-between gap-3">
+            <div><div class="text-sm font-bold text-emerald-200">UIS Assistant</div><div class="mt-1 text-[10px] text-slate-400">Gemini AI + local recovery checks</div></div>
+            <button id="uis-assistant-close" type="button" class="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-slate-300" aria-label="Close assistant">✕</button>
+          </div>
+          <div class="uis-ai-tabs" role="group" aria-label="Assistant mode">
+            <button type="button" data-uis-mode="inventory" aria-pressed="true">Inventory</button>
+            <button type="button" data-uis-mode="recovery" aria-pressed="false">Recovery</button>
+          </div>
+        </header>
+        <div class="uis-ai-notice" id="uis-ai-connection-notice">Local mode is active. No cloud sync. Gemini only receives relevant context after you enable it in Settings.</div>
+        <div id="uis-assistant-messages" class="uis-ai-messages" aria-live="polite"></div>
+        <div id="uis-assistant-quick" class="uis-ai-quick"></div>
+        <form id="uis-assistant-form" class="uis-ai-inputbar"><input id="uis-assistant-input" type="text" maxlength="500" autocomplete="off" placeholder="Ask about stock, sales, or recovery…" aria-label="Ask UIS Assistant"><button type="submit">Ask</button></form>
+      </section>
+    `);
+
+    const panel = document.getElementById('uis-assistant-panel');
+    const messages = document.getElementById('uis-assistant-messages');
+    const quick = document.getElementById('uis-assistant-quick');
+    const input = document.getElementById('uis-assistant-input');
+    const launcher = document.getElementById('uis-assistant-launcher');
+    const append = (role, text) => {
+      const node = document.createElement('div');
+      node.className = `uis-ai-message ${role}`;
+      node.textContent = text;
+      messages.appendChild(node);
+      messages.scrollTop = messages.scrollHeight;
+    };
+    const showWelcome = () => {
+      if (messages.childElementCount) return;
+      append('assistant', window.UISGemini?.isEnabled() ? `Gemini ${window.UISGemini.getModel()} is enabled. I can analyze selected local inventory context or explain read-only recovery checks. I never change stock or delete database data.` : 'I can answer using local UIS rules. Add a Gemini API key and enable data-sharing consent in Settings to turn on generative AI. Local recovery checks remain available without Gemini. I never change stock or delete database data.');
+      this.setUISAssistantMode('inventory');
+    };
+    launcher.addEventListener('click', () => {
+      panel.classList.toggle('uis-open');
+      const open = panel.classList.contains('uis-open');
+      launcher.setAttribute('aria-expanded', String(open));
+      if (open) { showWelcome(); input.focus(); }
+    });
+    document.getElementById('uis-assistant-close').addEventListener('click', () => {
+      panel.classList.remove('uis-open'); launcher.setAttribute('aria-expanded', 'false');
+    });
+    panel.querySelectorAll('[data-uis-mode]').forEach(button => button.addEventListener('click', () => {
+      this.setUISAssistantMode(button.dataset.uisMode);
+    }));
+    quick.addEventListener('click', event => {
+      const actionButton = event.target.closest('[data-uis-action]');
+      if (actionButton) {
+        const action = actionButton.dataset.uisAction;
+        actionButton.disabled = true;
+        (async () => {
+          try {
+            if (action === 'save') {
+              if (!this.workbook?.originalBuffer) { append('assistant', 'There is no loaded workbook to save. I did not change the local database.'); return; }
+              const saved = await this.flushWorkspaceSave();
+              append('assistant', saved ? 'UIS confirmed that the current workbook snapshot was saved locally.' : 'UIS could not confirm the save. Keep this page open, export a backup if possible, and do not clear site data.');
+            } else if (action === 'restore') {
+              if (this.workbook?.originalBuffer) { append('assistant', 'A workbook is already loaded. I will not replace it with a snapshot. Export a JSON backup first and use the normal workspace controls.'); return; }
+              const state = await this.inspectUISRecoveryState();
+              if (!(state.latest?.structurallyPresent || state.previous?.structurallyPresent)) { append('assistant', 'No structurally present local recovery snapshot was found. I did not modify the database.'); return; }
+              await this.restoreWorkspaceIfAvailable();
+              append('assistant', this.workbook?.originalBuffer ? 'UIS loaded a local recovery snapshot. Check the workbook tabs and immediately export a fresh JSON backup.' : 'UIS did not load a snapshot. The local database was not deleted. Keep the browser data intact.');
+            }
+          } catch (error) { append('assistant', `The action could not be completed: ${error?.message || error}. No database deletion was attempted.`); }
+          finally { actionButton.disabled = false; }
+        })();
+        return;
+      }
+      const button = event.target.closest('[data-uis-prompt]');
+      if (!button) return;
+      input.value = button.dataset.uisPrompt || '';
+      document.getElementById('uis-assistant-form').requestSubmit();
+    });
+    document.getElementById('uis-assistant-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const question = String(input.value || '').trim();
+      if (!question) return;
+      input.value = '';
+      append('user', question);
+      const pending = document.createElement('div');
+      pending.className = 'uis-ai-message assistant'; pending.textContent = 'Checking local UIS data…';
+      messages.appendChild(pending); messages.scrollTop = messages.scrollHeight;
+      try {
+        const answer = await this.answerUISWithGemini(question, this._uisAssistantMode);
+        pending.textContent = answer;
+      } catch (error) {
+        pending.textContent = `I could not complete that check: ${error?.message || error}. No recovery data was changed.`;
+      }
+      messages.scrollTop = messages.scrollHeight;
+    });
+    showWelcome();
+  };
+
+  app.setUISAssistantMode = function(mode) {
+    this._uisAssistantMode = mode === 'recovery' ? 'recovery' : 'inventory';
+    const panel = document.getElementById('uis-assistant-panel');
+    if (!panel) return;
+    panel.querySelectorAll('[data-uis-mode]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.uisMode === this._uisAssistantMode)));
+    const input = document.getElementById('uis-assistant-input');
+    const quick = document.getElementById('uis-assistant-quick');
+    if (input) input.placeholder = this._uisAssistantMode === 'recovery' ? 'Describe a save, database, or restore problem…' : 'Ask about products, stock, sales, or restocking…';
+    if (quick) {
+      const prompts = this._uisAssistantMode === 'recovery'
+        ? ['Check local recovery status', 'Why did saving fail?', 'How do I restore safely?']
+        : ['Show low-stock items', 'Which items are out of stock?', 'Find duplicate barcodes', 'Summarize sales'];
+      quick.innerHTML = prompts.map(p => `<button type="button" data-uis-prompt="${escapeText(p)}">${escapeText(p)}</button>`).join('') + (this._uisAssistantMode === 'recovery' ? '<button type="button" data-uis-action="save">Save current workbook now</button><button type="button" data-uis-action="restore">Try local restore</button>' : '');
+    }
+  };
+
+  app.answerUISInventory = function(question) {
+    const q = String(question || '').toLowerCase().trim();
+    const workbooks = this.getWorkspaceWorkbooks?.() || [];
+    if (!workbooks.length) return 'No workbook is currently loaded in this UIS browser workspace. Import a workbook or recover the local workspace first. I will not invent inventory figures.';
+    const data = this.getInventoryInsights();
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+    if (!rows.length) return 'The loaded workbooks contain no recognized inventory records yet. Check that the worksheets include product names and the managed stock quantity column.';
+
+    if (/duplicate|same barcode|barcode collision|repeated code/.test(q)) {
+      const dupes = (data.duplicates || []).slice(0, 12);
+      if (!dupes.length) return 'No duplicate barcode or SKU values were detected in the recognized code columns across the loaded workbooks.';
+      return `Found ${data.duplicates.length} duplicate code group(s) across the loaded workbooks.\n\n` + dupes.map(d => `${d.code}: ${d.matches.map(r => `${r.itemName} (${r.workbookName} / ${r.sheetName}, row ${r.rowNumber})`).join('; ')}`).join('\n');
+    }
+    if (/out of stock|zero stock|no stock|stock is zero/.test(q)) {
+      const list = (data.zero || []).slice(0, 15);
+      return `There are ${data.zero.length} item record(s) with zero stock.\n\n` + (list.length ? list.map(r => `• ${r.itemName} | ${r.workbookName} / ${r.sheetName} row ${r.rowNumber}`).join('\n') : 'No zero-stock records found.');
+    }
+    if (/low stock|running low|below threshold|need.*reorder|reorder|restock|purchase order/.test(q)) {
+      const list = (this.getReorderRecommendations?.() || []).slice(0, 15);
+      return `Low-stock threshold: ${formatQty(this.lowStockThreshold)} unit(s). ${data.low.length} item record(s) are low or at zero; ${list.length} reorder suggestions shown here. Suggested quantities use UIS's current target-stock rule, not a demand forecast.\n\n` + (list.length ? list.map(r => `• ${r.itemName}: ${formatQty(r.qty)} on hand, suggested order ${formatQty(r.suggestedOrder)} to reach ${formatQty(r.targetStock)} (${r.workbookName} / ${r.sheetName}, row ${r.rowNumber})`).join('\n') : 'No items currently meet the reorder rule.');
+    }
+    if (/sales|revenue|sold|transactions|pos/.test(q)) {
+      const sales = Array.isArray(this.sales) ? this.sales : [];
+      const now = Date.now();
+      const days = /last 7|this week|weekly/.test(q) ? 7 : /last 30|this month|monthly/.test(q) ? 30 : 0;
+      const selected = days ? sales.filter(s => { const t = new Date(s.timestamp || 0).getTime(); return Number.isFinite(t) && t >= now - days * 86400000 && t <= now; }) : sales;
+      const total = selected.reduce((sum, s) => sum + (Number(s.total) || 0), 0);
+      const units = selected.reduce((sum, s) => sum + (Array.isArray(s.lines) ? s.lines.reduce((n, line) => n + (Number(line.quantity) || 0), 0) : 0), 0);
+      const latest = selected.slice(0, 5).map(s => `• ${safeDate(s.timestamp)} · ${money(s.total)} · ${s.paymentMethod || 'Payment not recorded'}`).join('\n');
+      return `${days ? `Sales in the last ${days} days` : 'All recorded POS sales'}: ${selected.length} transaction(s), ${formatQty(units)} units, ${money(total)} recorded sales total.\n\n${latest || 'No matching completed sales were found.'}\n\nThis is a summary of the local UIS sales ledger, not a payment processor report.`;
+    }
+    if (/how many|total|overview|summary|inventory value|units on hand|workbooks|items count/.test(q)) {
+      const sales = Array.isArray(this.sales) ? this.sales : [];
+      const totalCostValue = rows.reduce((sum, r) => sum + (r.qty !== null && r.unitCost !== null ? r.qty * r.unitCost : 0), 0);
+      const valuedRows = rows.filter(r => r.qty !== null && r.unitCost !== null).length;
+      return `Local workspace overview:\n• Workbooks: ${workbooks.length}\n• Worksheets: ${workbooks.reduce((n, wb) => n + (wb.worksheets?.length || 0), 0)}\n• Inventory records: ${rows.length}\n• Units on hand: ${formatQty(data.totalQty)}\n• Low stock: ${data.low.length}\n• Zero stock: ${data.zero.length}\n• Duplicate code groups: ${(data.duplicates || []).length}\n• Completed POS sales: ${sales.length}\n• Cost-based stock value: ${valuedRows ? money(totalCostValue) + ` across ${valuedRows} records with recognized unit cost` : 'not available because no unit costs were recognized'}.\n\nFigures are calculated from the locally loaded workbook data.`;
+    }
+
+    const tokens = q.split(/[^a-z0-9]+/).filter(t => t.length > 1 && !['find','show','tell','about','what','which','where','item','items','product','products','stock','the','for','with','from','please','search'].includes(t));
+    const matches = rows.map(row => {
+      const hay = `${row.itemName} ${(row.codes || []).join(' ')} ${row.sheetName} ${row.workbookName}`.toLowerCase();
+      const score = tokens.reduce((n, token) => n + (hay.includes(token) ? (String(row.itemName).toLowerCase().includes(token) ? 3 : 1) : 0), 0);
+      return { row, score };
+    }).filter(x => x.score > 0).sort((a,b) => b.score - a.score || (a.row.qty ?? Infinity) - (b.row.qty ?? Infinity)).slice(0, 10);
+    if (matches.length) return `I found ${matches.length} matching inventory record(s):\n\n` + matches.map(({row}) => `• ${row.itemName} | ${row.qty === null ? 'Stock unknown' : formatQty(row.qty) + ' on hand'} | ${row.codes?.length ? row.codes.join(', ') : 'No recognized barcode'} | ${row.workbookName} / ${row.sheetName}, row ${row.rowNumber}`).join('\n');
+    return 'I could not match that to a known inventory question or product name. Try asking for low stock, zero stock, duplicate barcodes, reorder suggestions, sales totals, or a product name / barcode. I only use records UIS can identify in the loaded workbooks.';
+  };
+
+  app.inspectUISRecoveryState = async function() {
+    const result = { dbExists: false, dbVersion: null, stores: [], latest: null, previous: null, dbError: '', storage: null };
+    try {
+      if (navigator.storage?.estimate) {
+        const estimate = await navigator.storage.estimate();
+        result.storage = { usage: estimate.usage, quota: estimate.quota };
+      }
+    } catch (_) {}
+    try {
+      if (!('indexedDB' in window)) throw new Error('This browser does not provide IndexedDB.');
+      let exists = true;
+      if (typeof indexedDB.databases === 'function') {
+        const dbs = await indexedDB.databases();
+        exists = dbs.some(db => db.name === 'UIS_LocalWorkspace');
+      }
+      if (!exists) return result;
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('UIS_LocalWorkspace');
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('Could not inspect local database'));
+        request.onblocked = () => reject(new Error('Another UIS tab is blocking the database check.'));
+      });
+      result.dbExists = true; result.dbVersion = db.version; result.stores = Array.from(db.objectStoreNames);
+      if (db.objectStoreNames.contains('snapshots')) {
+        const snapshots = await new Promise((resolve, reject) => {
+          const tx = db.transaction('snapshots', 'readonly');
+          const store = tx.objectStore('snapshots');
+          const a = store.get('latest'), b = store.get('previous');
+          let count = 0, latest, previous;
+          const done = () => { if (++count === 2) resolve({ latest: latest || null, previous: previous || null }); };
+          a.onsuccess = () => { latest = a.result; done(); };
+          b.onsuccess = () => { previous = b.result; done(); };
+          a.onerror = b.onerror = () => reject(tx.error || new Error('Could not read recovery snapshots'));
+        });
+        const summarize = snapshot => snapshot ? {
+          savedAt: Number(snapshot.savedAt) || 0,
+          filename: String(snapshot.filename || snapshot.workbook?.filename || 'Workbook'),
+          workbookCount: Array.isArray(snapshot.workbooks) && snapshot.workbooks.length ? snapshot.workbooks.length : (snapshot.workbook ? 1 : 0),
+          worksheetCount: Array.isArray(snapshot.workbook?.worksheets) ? snapshot.workbook.worksheets.length : 0,
+          structurallyPresent: !!(snapshot.workbook?.originalBuffer && Array.isArray(snapshot.workbook?.worksheets) && snapshot.workbook.worksheets.length)
+        } : null;
+        result.latest = summarize(snapshots.latest); result.previous = summarize(snapshots.previous);
+      }
+      db.close();
+    } catch (error) { result.dbError = String(error?.message || error); }
+    return result;
+  };
+
+  app.answerUISRecovery = async function(question) {
+    const state = await this.inspectUISRecoveryState();
+    const currentError = this._workspaceSaveError ? String(this._workspaceSaveError.message || this._workspaceSaveError) : '';
+    const parts = [];
+    parts.push(`Current page: ${this.workbook ? `workbook loaded (${this.openWorkbooks?.length || 1} workbook tab(s))` : 'no workbook currently loaded'}.`);
+    parts.push(`Autosave state: ${this._workspaceDirty || this._workspaceSaveTimer || this._workspaceSaveQueued ? 'pending / dirty' : 'no pending save flag'}.`);
+    if (this._workspaceLastSavedAt) parts.push(`Last confirmed local save: ${safeDate(this._workspaceLastSavedAt)}.`);
+    if (currentError) parts.push(`Last save error recorded by UIS: ${currentError}.`);
+    if (state.dbError) parts.push(`Database inspection error: ${state.dbError}.`);
+    else if (!state.dbExists) parts.push('No UIS_LocalWorkspace database was found by the browser database listing.');
+    else {
+      parts.push(`IndexedDB version: ${state.dbVersion}; stores: ${state.stores.join(', ') || 'none'}.`);
+      parts.push(`Latest snapshot: ${state.latest ? `${state.latest.structurallyPresent ? 'structurally present' : 'present but incomplete'}; ${safeDate(state.latest.savedAt)}; ${state.latest.filename}; ${state.latest.workbookCount} workbook(s)` : 'not found'}.`);
+      parts.push(`Previous snapshot: ${state.previous ? `${state.previous.structurallyPresent ? 'structurally present' : 'present but incomplete'}; ${safeDate(state.previous.savedAt)}; ${state.previous.filename}; ${state.previous.workbookCount} workbook(s)` : 'not found'}.`);
+    }
+    if (state.storage?.quota) parts.push(`Browser storage estimate: ${(state.storage.usage / 1048576).toFixed(1)} MB used of ${(state.storage.quota / 1048576).toFixed(1)} MB available (estimate).`);
+
+    let diagnosis = 'The inspection did not identify a definite failure. Keep the current browser profile and avoid clearing site data.';
+    const err = `${currentError} ${state.dbError} ${question || ''}`.toLowerCase();
+    if (/versionerror|requested version|less than the existing version/.test(err)) diagnosis = 'Likely IndexedDB version mismatch. UIS must open the database at its existing/current schema version. Do not delete the database to fix a version mismatch.';
+    else if (/blocked|another tab|versionchange/.test(err)) diagnosis = 'The database may be held open by another UIS tab. Close duplicate UIS tabs, wait briefly, then run this check again. Do not clear browser storage.';
+    else if (/quota|storage|disk|space/.test(err) || (state.storage?.quota && state.storage.usage / state.storage.quota > .9)) diagnosis = 'Browser storage may be near its limit. Export a JSON backup while the workspace is accessible, then review device storage. Do not delete UIS site data as a first step.';
+    else if (/security|denied|notallowed/.test(err)) diagnosis = 'The browser may be restricting local storage for this site. Open the HTTPS GitHub Pages address in the same browser profile and check the browser site-storage permissions.';
+    else if (!this.workbook && (state.latest?.structurallyPresent || state.previous?.structurallyPresent)) diagnosis = 'A local snapshot appears to exist, but no workbook is loaded in the current page. A non-destructive restore attempt may be appropriate.';
+    else if (this._workspaceDirty || this._workspaceSaveTimer || this._workspaceSaveQueued) diagnosis = 'UIS reports pending changes. Keep the page open. Use the Save current workbook now action in this panel to flush the current snapshot before leaving.';
+
+    const guidance = [
+      'Safe next steps:',
+      '1. Do not clear browser data, uninstall the PWA, or delete the UIS database while recovery is unresolved.',
+      '2. If the workbook is visible, export a fresh JSON backup before changing or replacing the app file.',
+      '3. If another UIS tab is open, close the extra tabs and re-check.',
+      '4. Use the Try local restore action only when no workbook is loaded and a valid snapshot is listed.'
+    ].join('\n');
+    return `Recovery check\n${parts.join('\n')}\n\nAssessment: ${diagnosis}\n\n${guidance}\n\nThis check only reads IndexedDB metadata and snapshots. It does not delete, overwrite, or repair your data.`;
+  };
+
+  // Gemini configuration. API keys are never written to IndexedDB, workbooks,
+  // exports, auth.js, or source. Session storage is the default; persistent
+  // storage requires an explicit user choice in the UI.
+  const GEMINI_KEY_SESSION = 'uis_gemini_api_key_session_v1';
+  const GEMINI_KEY_DEVICE = 'uis_gemini_api_key_device_v1';
+  const GEMINI_MODEL_KEY = 'uis_gemini_model_v1';
+  const GEMINI_CONSENT_SESSION = 'uis_gemini_external_data_consent_session_v1';
+  const GEMINI_CONSENT_DEVICE = 'uis_gemini_external_data_consent_device_v1';
+  const GEMINI_MODELS = [
+    { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash · Fast, recommended' },
+    { id: 'gemini-4-argon', label: 'Gemini 4 Argon · Most capable reasoning' }
+  ];
+  const safeStorage = (storage, method, key, value) => {
+    try {
+      if (method === 'get') return storage.getItem(key);
+      if (method === 'remove') return storage.removeItem(key);
+      storage.setItem(key, value);
+    } catch (_) { return null; }
+  };
+  window.UISGemini = {
+    getKey() { return safeStorage(sessionStorage, 'get', GEMINI_KEY_SESSION) || safeStorage(localStorage, 'get', GEMINI_KEY_DEVICE) || ''; },
+    setKey(key, remember) {
+      const clean = String(key || '').trim();
+      if (!clean) return false;
+      safeStorage(sessionStorage, 'remove', GEMINI_KEY_SESSION);
+      safeStorage(localStorage, 'remove', GEMINI_KEY_DEVICE);
+      if (remember) safeStorage(localStorage, 'set', GEMINI_KEY_DEVICE, clean);
+      else safeStorage(sessionStorage, 'set', GEMINI_KEY_SESSION, clean);
+      return true;
+    },
+    clearKey() {
+      safeStorage(sessionStorage, 'remove', GEMINI_KEY_SESSION);
+      safeStorage(localStorage, 'remove', GEMINI_KEY_DEVICE);
+    },
+    hasSavedKey() { return !!this.getKey(); },
+    getModel() {
+      const saved = safeStorage(localStorage, 'get', GEMINI_MODEL_KEY);
+      return GEMINI_MODELS.some(m => m.id === saved) ? saved : 'gemini-3.8-flash';
+    },
+    setModel(model) {
+      if (!GEMINI_MODELS.some(m => m.id === model)) return false;
+      safeStorage(localStorage, 'set', GEMINI_MODEL_KEY, model);
+      return true;
+    },
+    getConsent() {
+      const session = safeStorage(sessionStorage, 'get', GEMINI_CONSENT_SESSION);
+      if (session !== null) return session === 'yes';
+      return safeStorage(localStorage, 'get', GEMINI_CONSENT_DEVICE) === 'yes';
+    },
+    setSessionConsent(enabled) {
+      safeStorage(sessionStorage, 'set', GEMINI_CONSENT_SESSION, enabled ? 'yes' : 'no');
+    },
+    setDeviceConsent(enabled) {
+      safeStorage(sessionStorage, 'remove', GEMINI_CONSENT_SESSION);
+      safeStorage(localStorage, 'set', GEMINI_CONSENT_DEVICE, enabled ? 'yes' : 'no');
+    },
+    clearConsent() {
+      safeStorage(sessionStorage, 'remove', GEMINI_CONSENT_SESSION);
+      safeStorage(localStorage, 'remove', GEMINI_CONSENT_DEVICE);
+    },
+    isEnabled() { return !!this.getKey() && this.getConsent(); },
+    async request(input, options = {}) {
+      const key = this.getKey();
+      if (!key) throw new Error('No Gemini API key is configured. Add one in Settings.');
+      const model = this.getModel();
+      const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+          model,
+          input: String(input || ''),
+          system_instruction: String(options.systemInstruction || 'You are the UIS inventory and recovery assistant. Be accurate, concise, and clearly distinguish verified local facts from suggestions.'),
+          store: false,
+          generation_config: { max_output_tokens: Number(options.maxOutputTokens) || 700, thinking_level: model === 'gemini-4-argon' ? 'high' : 'medium' }
+        })
+      });
+      let payload = {};
+      try { payload = await response.json(); } catch (_) {}
+      if (!response.ok) {
+        const apiMessage = payload?.error?.message || payload?.message || `HTTP ${response.status}`;
+        throw new Error(`Gemini API request failed (${response.status}): ${apiMessage}. Check the key, model access, quota, and network connection.`);
+      }
+      const textOutput = (payload.steps || [])
+        .filter(step => step?.type === 'model_output')
+        .flatMap(step => Array.isArray(step.content) ? step.content : [])
+        .filter(part => part?.type === 'text' && part.text)
+        .map(part => part.text).join('\n\n');
+      const result = payload.output_text || textOutput;
+      if (!result) throw new Error(`Gemini returned no text (status: ${payload.status || 'unknown'}).`);
+      return result;
+    },
+    async testConnection() {
+      return this.request('Reply with exactly: UIS Gemini connection successful.', {
+        systemInstruction: 'You are a connection test. Reply with the exact requested phrase and nothing else.',
+        maxOutputTokens: 30
+      });
+    }
+  };
+
+  app.buildUISGeminiContext = function(question, mode, localFindings) {
+    if (mode === 'recovery') {
+      return `USER QUESTION:\n${question}\n\nLOCAL RECOVERY INSPECTION (read-only):\n${localFindings}\n\nAnalyze only the inspection above. Never recommend clearing site data, deleting IndexedDB, uninstalling the PWA, or overwriting a loaded workbook. Give safe, non-destructive next steps. Never claim that data is recovered unless the local inspection confirms it.`;
+    }
+    const workbooks = this.getWorkspaceWorkbooks?.() || [];
+    const insights = this.getInventoryInsights?.() || {};
+    const rows = Array.isArray(insights.rows) ? insights.rows : [];
+    const tokens = String(question || '').toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1);
+    const ranked = rows.map(row => {
+      const hay = `${row.itemName || ''} ${(row.codes || []).join(' ')} ${row.workbookName || ''} ${row.sheetName || ''}`.toLowerCase();
+      return { row, score: tokens.reduce((n, token) => n + (hay.includes(token) ? 1 : 0), 0) };
+    }).sort((a,b) => b.score - a.score);
+    const selected = (ranked.some(x => x.score > 0) ? ranked.filter(x => x.score > 0) : ranked).slice(0, 180).map(({row}) => ({
+      product: String(row.itemName || 'Unnamed item').slice(0, 120),
+      quantityOnHand: row.qty,
+      barcodesOrSku: (row.codes || []).slice(0, 4),
+      unitCost: row.unitCost,
+      workbook: String(row.workbookName || '').slice(0, 80),
+      worksheet: String(row.sheetName || '').slice(0, 80),
+      rowNumber: row.rowNumber
+    }));
+    const sales = Array.isArray(this.sales) ? this.sales : [];
+    const salesTotal = sales.reduce((sum, sale) => sum + (Number(sale.total) || 0), 0);
+    const salesUnits = sales.reduce((sum, sale) => sum + (Array.isArray(sale.lines) ? sale.lines.reduce((n, line) => n + (Number(line.quantity) || 0), 0) : 0), 0);
+    const low = (insights.low || []).slice(0, 60).map(r => ({ product: r.itemName, quantityOnHand: r.qty, workbook: r.workbookName, worksheet: r.sheetName }));
+    const zero = (insights.zero || []).slice(0, 60).map(r => ({ product: r.itemName, workbook: r.workbookName, worksheet: r.sheetName }));
+    const dupes = (insights.duplicates || []).slice(0, 40).map(d => ({ code: d.code, matches: (d.matches || []).slice(0, 6).map(r => ({ product: r.itemName, workbook: r.workbookName, worksheet: r.sheetName, row: r.rowNumber })) }));
+    const context = {
+      localFindings,
+      workspace: { workbookCount: workbooks.length, worksheetCount: workbooks.reduce((n, wb) => n + (wb.worksheets?.length || 0), 0), recognizedInventoryRecordCount: rows.length, unitsOnHand: insights.totalQty, lowStockCount: (insights.low || []).length, zeroStockCount: (insights.zero || []).length, duplicateCodeGroupCount: (insights.duplicates || []).length, lowStockThreshold: this.lowStockThreshold },
+      salesSummary: { completedSaleCount: sales.length, recordedSalesTotal: salesTotal, unitsSold: salesUnits },
+      relevantInventoryRecords: selected,
+      lowStockExamples: low,
+      zeroStockExamples: zero,
+      duplicateCodeExamples: dupes,
+      coverageNote: selected.length < rows.length ? `Only ${selected.length} relevant/sample inventory records of ${rows.length} recognized records are included. Do not infer totals from the sample; use the aggregate counts and local findings.` : 'All recognized inventory records are included.'
+    };
+    return `USER QUESTION:\n${question}\n\nLOCAL UIS DATA (JSON; treat as the only source of inventory facts):\n${JSON.stringify(context)}\n\nAnswer in clear language. Use only the supplied facts for quantities, sales and product details. Do not invent missing values. Explain calculations and label estimates as estimates. Do not initiate stock changes, purchases, or data edits; provide recommendations only.`;
+  };
+
+  app.answerUISWithGemini = async function(question, mode) {
+    const localFindings = mode === 'recovery' ? await this.answerUISRecovery(question) : this.answerUISInventory(question);
+    if (!window.UISGemini?.isEnabled()) return localFindings + (window.UISGemini?.hasSavedKey() ? '\n\nGemini is configured but external-data consent is off. Enable it in Settings to use the generative assistant.' : '\n\nGemini is not connected. Add an optional API key in Settings to enable generative AI.');
+    const input = this.buildUISGeminiContext(question, mode, localFindings);
+    const systemInstruction = mode === 'recovery'
+      ? 'You are UIS Recovery Assistant. Analyze the provided local, read-only diagnostics. Protect local IndexedDB data. Never recommend deleting databases, clearing site data, uninstalling the PWA, or overwriting a loaded workbook. Do not claim to have repaired or recovered anything. Prefer reversible, non-destructive steps. If evidence is insufficient, say so.'
+      : 'You are UIS Inventory Assistant. Use only the supplied local UIS inventory and sales context. Never fabricate stock, barcodes, sales, prices, or workbook names. Explain uncertainty and sample limits. Never perform or claim to perform inventory changes, purchases, payments, or database writes.';
+    try {
+      const answer = await window.UISGemini.request(input, { systemInstruction, maxOutputTokens: 900 });
+      return `${answer}\n\n— Gemini ${window.UISGemini.getModel()} · Based on selected local UIS context.`;
+    } catch (error) {
+      return `Gemini could not respond: ${error?.message || error}\n\nLocal UIS result (still available offline):\n${localFindings}`;
+    }
+  };
+
+  // Optional login-screen API key entry. No key is required to sign in.
+  const loginForm = document.getElementById('uis-auth-form');
+  if (loginForm && !document.getElementById('uis-gemini-login-key')) {
+    const submitButton = document.getElementById('uis-auth-submit');
+    if (submitButton) submitButton.insertAdjacentHTML('beforebegin', `
+      <div class="mb-4 rounded-xl border border-emerald-500/20 bg-emerald-950/20 p-3">
+        <label for="uis-gemini-login-key" class="block text-xs font-semibold text-emerald-200 mb-2">Gemini API key <span class="font-normal text-neutral-400">(optional)</span></label>
+        <input id="uis-gemini-login-key" type="password" autocomplete="off" spellcheck="false" placeholder="AQ.Ab8R… or your Gemini key" maxlength="300" class="w-full mb-2" />
+        <label class="flex items-start gap-2 text-[11px] text-neutral-300 mb-2"><input id="uis-gemini-login-remember" type="checkbox" class="mt-0.5" /> Remember this key on this device</label>
+        <label class="flex items-start gap-2 text-[11px] text-neutral-300"><input id="uis-gemini-login-consent" type="checkbox" class="mt-0.5" /> Enable Gemini for this session. Relevant inventory or recovery details may be sent to Google when I ask the assistant.</label>
+        <p class="mt-2 text-[10px] leading-relaxed text-neutral-500">Leave blank to configure later in Settings. A key saved on this device is accessible to anyone using this same browser profile.</p>
+      </div>`);
+  }
+  const loginGeminiConsent = document.getElementById('uis-gemini-login-consent');
+  if (loginGeminiConsent) loginGeminiConsent.checked = window.UISGemini.getConsent();
+
+  // Add Gemini settings without replacing the existing Settings & Data screen.
+  const originalRenderThemeSettingsView = app.renderThemeSettingsView.bind(app);
+  app.renderThemeSettingsView = function(container) {
+    originalRenderThemeSettingsView(container);
+    const section = document.createElement('section');
+    section.className = 'rounded-2xl p-4 sm:p-5 mt-5';
+    section.style.cssText = 'background:var(--uis-surface);border:1px solid var(--uis-line)';
+    const model = window.UISGemini.getModel();
+    const hasKey = window.UISGemini.hasSavedKey();
+    const consent = window.UISGemini.getConsent();
+    section.innerHTML = `
+      <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+        <div><div class="text-base font-semibold">Gemini AI Assistant</div><p class="text-xs mt-1" style="color:var(--uis-muted)">Connect Google's Gemini models for natural-language inventory analysis and recovery explanations. UIS local storage remains local; only the context needed for a question is sent when Gemini is enabled.</p></div>
+        <span class="text-[10px] rounded-full px-3 py-1" style="background:var(--uis-surface-2);color:var(--uis-accent)">${hasKey && consent ? 'GEMINI ENABLED' : hasKey ? 'CONSENT OFF' : 'LOCAL ONLY'}</span>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div class="sm:col-span-2">
+          <label for="uis-gemini-settings-key" class="block text-xs font-medium mb-1">Gemini API key</label>
+          <input id="uis-gemini-settings-key" type="password" autocomplete="off" spellcheck="false" maxlength="300" placeholder="${hasKey ? 'A key is configured. Enter a new key to replace it.' : 'Paste AQ.Ab8R… or another Gemini API key'}" class="w-full rounded-xl px-3 py-2 text-sm" style="background:var(--uis-surface-2);border:1px solid var(--uis-line);color:var(--uis-text)" />
+          <p class="text-[10px] mt-1" style="color:var(--uis-muted)">${hasKey ? 'A key is currently available in this browser session or saved device settings. It is never displayed.' : 'No key configured. Gemini is optional; local assistant functions still work.'}</p>
+        </div>
+        <div>
+          <label for="uis-gemini-model" class="block text-xs font-medium mb-1">Gemini model</label>
+          <select id="uis-gemini-model" class="w-full rounded-xl px-3 py-2 text-sm" style="background:var(--uis-surface-2);border:1px solid var(--uis-line);color:var(--uis-text)">
+            ${GEMINI_MODELS.map(m => `<option value="${m.id}" ${m.id === model ? 'selected' : ''}>${m.label}</option>`).join('')}
+          </select>
+        </div>
+        <div class="flex items-end">
+          <label class="flex items-start gap-2 text-xs" style="color:var(--uis-muted)"><input id="uis-gemini-settings-remember" type="checkbox" class="mt-0.5" /> Remember key on this device</label>
+        </div>
+      </div>
+      <label class="flex items-start gap-2 text-xs mt-4" style="color:var(--uis-text)"><input id="uis-gemini-settings-consent" type="checkbox" class="mt-0.5" ${consent ? 'checked' : ''} /> I allow relevant inventory records, aggregate sales figures, or recovery diagnostics to be sent to Google Gemini when I ask the assistant. Do not send the entire workbook by default.</label>
+      <div class="flex flex-wrap gap-2 mt-4">
+        <button id="uis-gemini-save" type="button" class="rounded-xl px-4 py-2 text-xs font-semibold" style="background:var(--uis-accent);color:#102018">Save Gemini settings</button>
+        <button id="uis-gemini-test" type="button" class="rounded-xl px-4 py-2 text-xs font-semibold" style="background:var(--uis-surface-2);border:1px solid var(--uis-line);color:var(--uis-text)">Test connection</button>
+        <button id="uis-gemini-clear" type="button" class="rounded-xl px-4 py-2 text-xs font-semibold" style="background:var(--uis-surface-2);border:1px solid var(--uis-line);color:var(--uis-text)">Remove key</button>
+      </div>
+      <p id="uis-gemini-settings-status" class="text-xs mt-3" role="status" aria-live="polite" style="color:var(--uis-muted)"></p>
+      <p class="text-[10px] leading-relaxed mt-3" style="color:var(--uis-muted)">Security and privacy: this is a browser-only integration. Keys saved on this device are stored in browser local storage and can be read by someone with access to this browser profile or its developer tools. A key entered in a public client app is not protected like a server-side secret. Google processes requests sent to its API; UIS sends store=false to avoid saving Gemini interaction history, but this is not a promise of zero provider-side processing or retention. API usage may consume quota or incur charges under your Google account. No cloud sync is added.</p>
+    `;
+    container.prepend(section);
+    const status = section.querySelector('#uis-gemini-settings-status');
+    section.querySelector('#uis-gemini-save').addEventListener('click', () => {
+      const entered = section.querySelector('#uis-gemini-settings-key').value.trim();
+      const remember = section.querySelector('#uis-gemini-settings-remember').checked;
+      const allow = section.querySelector('#uis-gemini-settings-consent').checked;
+      const selectedModel = section.querySelector('#uis-gemini-model').value;
+      if (entered) window.UISGemini.setKey(entered, remember);
+      else if (remember && window.UISGemini.getKey()) window.UISGemini.setKey(window.UISGemini.getKey(), true);
+      window.UISGemini.setModel(selectedModel);
+      window.UISGemini.setDeviceConsent(allow);
+      section.querySelector('#uis-gemini-settings-key').value = '';
+      status.textContent = `Settings saved. ${window.UISGemini.hasSavedKey() ? 'A Gemini key is configured.' : 'No key is configured; local mode remains available.'} ${allow ? 'External Gemini analysis is enabled.' : 'External Gemini analysis is disabled.'}`;
+      const notice = document.getElementById('uis-ai-connection-notice');
+      if (notice) notice.textContent = window.UISGemini.isEnabled() ? `Gemini ${window.UISGemini.getModel()} is enabled. Relevant context is sent to Google only when you submit a question. No cloud sync.` : 'Local mode is active. No cloud sync. Configure a key and enable consent in Settings to use Gemini.';
+      const badge = section.querySelector('span');
+      if (badge) badge.textContent = window.UISGemini.isEnabled() ? 'GEMINI ENABLED' : window.UISGemini.hasSavedKey() ? 'CONSENT OFF' : 'LOCAL ONLY';
+    });
+    section.querySelector('#uis-gemini-test').addEventListener('click', async () => {
+      status.textContent = 'Testing Gemini connection…';
+      const button = section.querySelector('#uis-gemini-test'); button.disabled = true;
+      try {
+        const entered = section.querySelector('#uis-gemini-settings-key').value.trim();
+        if (entered) window.UISGemini.setKey(entered, section.querySelector('#uis-gemini-settings-remember').checked);
+        window.UISGemini.setModel(section.querySelector('#uis-gemini-model').value);
+        const result = await window.UISGemini.testConnection();
+        status.textContent = `Connection successful: ${result}`;
+      } catch (error) { status.textContent = error?.message || String(error); }
+      finally { button.disabled = false; }
+    });
+    section.querySelector('#uis-gemini-clear').addEventListener('click', () => {
+      window.UISGemini.clearKey(); window.UISGemini.clearConsent();
+      section.querySelector('#uis-gemini-settings-key').value = '';
+      section.querySelector('#uis-gemini-settings-consent').checked = false;
+      status.textContent = 'Gemini key and consent settings removed from this browser.';
+      const notice = document.getElementById('uis-ai-connection-notice');
+      if (notice) notice.textContent = 'Local mode is active. No cloud sync. Gemini only receives relevant context after you enable it in Settings.';
+      const badge = section.querySelector('span'); if (badge) badge.textContent = 'LOCAL ONLY';
+    });
+  };
+
+  const originalInit = app.init.bind(app);
+  app.init = async function() {
+    await originalInit();
+    this.installUISAssistant();
+  };
+
+  // Install the launcher as soon as this script loads, rather than waiting for
+  // the full workbook initialization to finish. This keeps the assistant UI
+  // visible even when workspace loading reports an error. Installation is
+  // idempotent, so init may safely call it again after startup.
+  app.installUISAssistant();
+  const assistantNotice = document.getElementById('uis-ai-connection-notice');
+  if (assistantNotice && window.UISGemini?.isEnabled()) assistantNotice.textContent = `Gemini ${window.UISGemini.getModel()} is enabled. Relevant context is sent to Google only when you submit a question. No cloud sync.`;
+})();
+
   </script>
 </body>
 </html>
