@@ -1158,7 +1158,7 @@ body {
   </div>
 
   <!-- Public account list for the basic deterrent-only login gate. -->
-  <script src="./auth.js?v=20261031-loginfix"></script>
+  <script src="./auth.js?v=20261101-login-recovery-fix"></script>
   <!-- ====================================================================== -->
   <!-- APPLICATION JAVASCRIPT ENGINE -->
   <!-- ====================================================================== -->
@@ -8632,6 +8632,25 @@ handleSetScannedItemQty(rawAddedQty) {
       getConfig() {
         return window.UIS_AUTH_CONFIG && typeof window.UIS_AUTH_CONFIG === 'object' ? window.UIS_AUTH_CONFIG : null;
       },
+      async refreshConfig() {
+        // GitHub Pages and an installed PWA can retain an older auth.js response.
+        // Load a versioned same-origin URL before checking credentials so the
+        // current account list is used without changing auth.js or its users.
+        return new Promise(resolve => {
+          const script = document.createElement('script');
+          script.src = new URL('./auth.js?v=20261101-login-recovery-fix', document.baseURI).href;
+          script.async = true;
+          script.onload = () => {
+            const config = this.getConfig();
+            resolve(!!(config && Array.isArray(config.users) && config.users.length));
+          };
+          script.onerror = () => {
+            const config = this.getConfig();
+            resolve(!!(config && Array.isArray(config.users) && config.users.length));
+          };
+          document.head.appendChild(script);
+        });
+      },
       getCurrentUser() {
         try {
           const raw = sessionStorage.getItem(this.sessionKey);
@@ -8712,22 +8731,27 @@ handleSetScannedItemQty(rawAddedQty) {
           if (message) message.textContent = 'No accounts were found in auth.js. Check that the users list contains active account entries.';
         }
 
-        form.addEventListener('submit', event => {
+        form.addEventListener('submit', async event => {
           event.preventDefault();
           if (message) message.textContent = '';
           if (submit) submit.disabled = true;
           try {
+            const configLoaded = await this.refreshConfig();
+            if (!configLoaded) {
+              if (message) message.textContent = 'UIS could not load the account list. Check that auth.js is uploaded beside index.html in the same GitHub Pages folder, then refresh.';
+              return;
+            }
             if (this.login(username.value, password.value)) {
               password.value = '';
               this.startApp();
             } else {
-              if (message) message.textContent = 'Login did not match an account in the loaded auth.js file. Check the username and password, then try again.';
+              if (message) message.textContent = 'The account list loaded, but the username and password did not match. Check spelling and capitalization of the password.';
               password.value = '';
               password.focus();
             }
           } catch (error) {
             console.error('UIS login failed:', error);
-            if (message) message.textContent = 'The login script encountered an error. Refresh the page and try again.';
+            if (message) message.textContent = 'Sign-in could not complete. Refresh UIS and try again. If it continues, check that auth.js is beside index.html.';
           } finally {
             if (submit) submit.disabled = false;
           }
