@@ -9003,9 +9003,24 @@ handleSetScannedItemQty(rawAddedQty) {
   const GEMINI_MODEL_KEY = 'uis_gemini_model_v1';
   const GEMINI_CONSENT_SESSION = 'uis_gemini_external_data_consent_session_v1';
   const GEMINI_CONSENT_DEVICE = 'uis_gemini_external_data_consent_device_v1';
+  // Text-capable Gemini 3.x models supported by the Interactions API.
+  // Keep image, live-audio, TTS and transcription endpoints out of this
+  // text-chat selector because they use different request/response contracts.
   const GEMINI_MODELS = [
-    { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash · Fast, recommended' },
-    { id: 'gemini-4-argon', label: 'Gemini 4 Argon · Most capable reasoning' }
+    { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash · Recommended / fastest' },
+    { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash · Advanced general use' },
+    { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash · Balanced' },
+    { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash · Stable fallback' },
+    { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite · Efficient fallback' },
+    { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite · Lowest-cost fallback' },
+    { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro · Preview / reasoning' },
+    { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash · Preview' },
+    { id: 'gemini-4-argon', label: 'Gemini 4 Argon · Advanced reasoning' }
+  ];
+  const GEMINI_FALLBACK_ORDER = [
+    'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash',
+    'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite',
+    'gemini-3.1-pro-preview', 'gemini-3-flash-preview'
   ];
   const safeStorage = (storage, method, key, value) => {
     try {
@@ -9055,36 +9070,69 @@ handleSetScannedItemQty(rawAddedQty) {
       safeStorage(sessionStorage, 'remove', GEMINI_CONSENT_SESSION);
       safeStorage(localStorage, 'remove', GEMINI_CONSENT_DEVICE);
     },
+    lastUsedModel: null,
+    lastFallback: false,
+    getLastUsedModel() { return this.lastUsedModel || this.getModel(); },
     isEnabled() { return !!this.getKey() && this.getConsent(); },
+    isQuotaOrTransientError(status, message) {
+      const text = String(message || '').toLowerCase();
+      return [429, 500, 502, 503, 504].includes(Number(status)) ||
+        /resource.?exhausted|quota|rate.?limit|too many requests|overloaded|temporarily unavailable|capacity/.test(text);
+    },
     async request(input, options = {}) {
       const key = this.getKey();
       if (!key) throw new Error('No Gemini API key is configured. Add one in Settings.');
-      const model = this.getModel();
-      const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify({
-          model,
-          input: String(input || ''),
-          system_instruction: String(options.systemInstruction || 'You are the UIS inventory and recovery assistant. Be accurate, concise, and clearly distinguish verified local facts from suggestions.'),
-          store: false,
-          generation_config: { max_output_tokens: Number(options.maxOutputTokens) || 700, thinking_level: model === 'gemini-4-argon' ? 'high' : 'medium' }
-        })
-      });
-      let payload = {};
-      try { payload = await response.json(); } catch (_) {}
-      if (!response.ok) {
-        const apiMessage = payload?.error?.message || payload?.message || `HTTP ${response.status}`;
-        throw new Error(`Gemini API request failed (${response.status}): ${apiMessage}. Check the key, model access, quota, and network connection.`);
+      const preferred = options.model || this.getModel();
+      const candidates = [preferred, ...GEMINI_FALLBACK_ORDER.filter(id => id !== preferred)];
+      let lastError = null;
+      this.lastFallback = false;
+      for (let index = 0; index < candidates.length; index++) {
+        const model = candidates[index];
+        let response, payload = {};
+        try {
+          response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+            body: JSON.stringify({
+              model,
+              input: String(input || ''),
+              system_instruction: String(options.systemInstruction || 'You are the UIS inventory and recovery assistant. Be accurate, concise, and clearly distinguish verified local facts from suggestions.'),
+              store: false,
+              generation_config: { max_output_tokens: Number(options.maxOutputTokens) || 700, thinking_level: model === 'gemini-4-argon' || model === 'gemini-3.1-pro-preview' ? 'high' : 'medium' }
+            })
+          });
+          try { payload = await response.json(); } catch (_) {}
+        } catch (networkError) {
+          lastError = networkError;
+          // Network failures may be transient; try the next configured model.
+          if (index < candidates.length - 1) { this.lastFallback = true; continue; }
+          throw networkError;
+        }
+        if (!response.ok) {
+          const apiMessage = payload?.error?.message || payload?.message || `HTTP ${response.status}`;
+          lastError = new Error(`Gemini API request failed (${response.status}): ${apiMessage}`);
+          lastError.status = response.status;
+          if (this.isQuotaOrTransientError(response.status, apiMessage) && index < candidates.length - 1) {
+            this.lastFallback = true;
+            continue;
+          }
+          throw new Error(`${lastError.message}. Check the key, model access, quota, and network connection.`);
+        }
+        const textOutput = (payload.steps || [])
+          .filter(step => step?.type === 'model_output')
+          .flatMap(step => Array.isArray(step.content) ? step.content : [])
+          .filter(part => part?.type === 'text' && part.text)
+          .map(part => part.text).join('\n\n');
+        const result = payload.output_text || textOutput;
+        if (!result) {
+          lastError = new Error(`Gemini returned no text (status: ${payload.status || 'unknown'}).`);
+          // An empty response is not evidence of quota exhaustion; don't mask it.
+          throw lastError;
+        }
+        this.lastUsedModel = model;
+        return result;
       }
-      const textOutput = (payload.steps || [])
-        .filter(step => step?.type === 'model_output')
-        .flatMap(step => Array.isArray(step.content) ? step.content : [])
-        .filter(part => part?.type === 'text' && part.text)
-        .map(part => part.text).join('\n\n');
-      const result = payload.output_text || textOutput;
-      if (!result) throw new Error(`Gemini returned no text (status: ${payload.status || 'unknown'}).`);
-      return result;
+      throw lastError || new Error('No Gemini model could complete the request.');
     },
     async testConnection() {
       return this.request('Reply with exactly: UIS Gemini connection successful.', {
@@ -9143,7 +9191,9 @@ handleSetScannedItemQty(rawAddedQty) {
       : 'You are UIS Inventory Assistant. Use only the supplied local UIS inventory and sales context. Never fabricate stock, barcodes, sales, prices, or workbook names. Explain uncertainty and sample limits. Never perform or claim to perform inventory changes, purchases, payments, or database writes.';
     try {
       const answer = await window.UISGemini.request(input, { systemInstruction, maxOutputTokens: 900 });
-      return `${answer}\n\n— Gemini ${window.UISGemini.getModel()} · Based on selected local UIS context.`;
+      const usedModel = window.UISGemini.getLastUsedModel();
+      const fallbackNote = window.UISGemini.lastFallback ? ' · automatic quota fallback' : '';
+      return `${answer}\n\n— Gemini ${usedModel}${fallbackNote} · Based on selected local UIS context.`;
     } catch (error) {
       return `Gemini could not respond: ${error?.message || error}\n\nLocal UIS result (still available offline):\n${localFindings}`;
     }
@@ -9177,7 +9227,7 @@ handleSetScannedItemQty(rawAddedQty) {
     const consent = window.UISGemini.getConsent();
     section.innerHTML = `
       <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
-        <div><div class="text-base font-semibold">Gemini AI Assistant</div><p class="text-xs mt-1" style="color:var(--uis-muted)">Connect Google's Gemini models for natural-language inventory analysis and recovery explanations. UIS local storage remains local; only the context needed for a question is sent when Gemini is enabled.</p></div>
+        <div><div class="text-base font-semibold">Gemini AI Assistant</div><p class="text-xs mt-1" style="color:var(--uis-muted)">Connect Google's Gemini models for natural-language inventory analysis and recovery explanations. Includes the latest text-capable Gemini 3.x models and automatic fallback on quota/rate-limit or temporary service errors. UIS local storage remains local; only the context needed for a question is sent when Gemini is enabled.</p></div>
         <span class="text-[10px] rounded-full px-3 py-1" style="background:var(--uis-surface-2);color:var(--uis-accent)">${hasKey && consent ? 'GEMINI ENABLED' : hasKey ? 'CONSENT OFF' : 'LOCAL ONLY'}</span>
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -9187,7 +9237,7 @@ handleSetScannedItemQty(rawAddedQty) {
           <p class="text-[10px] mt-1" style="color:var(--uis-muted)">${hasKey ? 'A key is currently available in this browser session or saved device settings. It is never displayed.' : 'No key configured. Gemini is optional; local assistant functions still work.'}</p>
         </div>
         <div>
-          <label for="uis-gemini-model" class="block text-xs font-medium mb-1">Gemini model</label>
+          <label for="uis-gemini-model" class="block text-xs font-medium mb-1">Preferred Gemini model</label>
           <select id="uis-gemini-model" class="w-full rounded-xl px-3 py-2 text-sm" style="background:var(--uis-surface-2);border:1px solid var(--uis-line);color:var(--uis-text)">
             ${GEMINI_MODELS.map(m => `<option value="${m.id}" ${m.id === model ? 'selected' : ''}>${m.label}</option>`).join('')}
           </select>
@@ -9196,6 +9246,7 @@ handleSetScannedItemQty(rawAddedQty) {
           <label class="flex items-start gap-2 text-xs" style="color:var(--uis-muted)"><input id="uis-gemini-settings-remember" type="checkbox" class="mt-0.5" /> Remember key on this device</label>
         </div>
       </div>
+      <p class="text-[10px] mt-2" style="color:var(--uis-muted)">Automatic fallback is always on: UIS tries your preferred model first, then other Gemini 3.x text models if Google reports quota exhaustion, rate limiting, temporary overload, or a transient network error. Your saved preference is not changed.</p>
       <label class="flex items-start gap-2 text-xs mt-4" style="color:var(--uis-text)"><input id="uis-gemini-settings-consent" type="checkbox" class="mt-0.5" ${consent ? 'checked' : ''} /> I allow relevant inventory records, aggregate sales figures, or recovery diagnostics to be sent to Google Gemini when I ask the assistant. Do not send the entire workbook by default.</label>
       <div class="flex flex-wrap gap-2 mt-4">
         <button id="uis-gemini-save" type="button" class="rounded-xl px-4 py-2 text-xs font-semibold" style="background:var(--uis-accent);color:#102018">Save Gemini settings</button>
@@ -9231,7 +9282,7 @@ handleSetScannedItemQty(rawAddedQty) {
         if (entered) window.UISGemini.setKey(entered, section.querySelector('#uis-gemini-settings-remember').checked);
         window.UISGemini.setModel(section.querySelector('#uis-gemini-model').value);
         const result = await window.UISGemini.testConnection();
-        status.textContent = `Connection successful: ${result}`;
+        status.textContent = `Connection successful using ${window.UISGemini.getLastUsedModel()}${window.UISGemini.lastFallback ? ' (automatic fallback)' : ''}: ${result}`;
       } catch (error) { status.textContent = error?.message || String(error); }
       finally { button.disabled = false; }
     });
