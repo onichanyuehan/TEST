@@ -784,6 +784,18 @@ body {
     #uis-auth-logout { padding: 7px 10px; border: 1px solid rgba(255,255,255,.12); border-radius: 9px; background: rgba(20,20,20,.72); color: #d4d4d4; font-size: 11px; white-space: nowrap; }
   </style>
 
+
+  <style id="uis-local-assistant-styles">
+    .uis-ai-panel{background:linear-gradient(145deg,rgba(17,34,43,.97),rgba(10,20,28,.98));border:1px solid rgba(85,223,184,.18);border-radius:20px;box-shadow:0 18px 55px rgba(0,0,0,.22)}
+    .uis-ai-tab{border:1px solid rgba(148,163,184,.18);border-radius:999px;padding:9px 14px;font-size:11px;font-weight:700;color:#9fb0bb;background:rgba(255,255,255,.035)}
+    .uis-ai-tab[aria-selected="true"]{background:#55dfb8;color:#06231e;border-color:#55dfb8}
+    .uis-ai-answer{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}
+    .uis-ai-result{border:1px solid rgba(148,163,184,.14);background:rgba(255,255,255,.035);border-radius:12px;padding:11px}
+    .uis-ai-chip{border:1px solid rgba(85,223,184,.25);border-radius:999px;padding:8px 11px;color:#9be9d2;font-size:10px;background:rgba(56,214,176,.06)}
+    .uis-ai-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 9px;font-size:10px;font-weight:700;background:rgba(56,214,176,.1);color:#8be7ce}
+    @media(max-width:640px){.uis-ai-panel{border-radius:16px}.uis-ai-tab{padding:9px 11px}}
+  </style>
+
 </head>
 <body class="min-h-screen bg-[#0d0d0d] text-[#ececec] flex flex-col selection:bg-emerald-500/30 selection:text-emerald-200 overflow-x-hidden uis-auth-locked">
 
@@ -8681,6 +8693,156 @@ handleSetScannedItemQty(rawAddedQty) {
     };
 
   </script>
+  <script id="uis-local-assistant-v1">
+    // UIS Local Assistant: diagnostics and inventory analysis run entirely in this browser.
+    // This module makes no network requests and does not alter the IndexedDB schema.
+    (() => {
+      if (!window.app || app.__uisLocalAssistantInstalled) return;
+      app.__uisLocalAssistantInstalled = true;
+      app.uisAssistantTab = 'inventory';
+      app.uisAssistantQuery = '';
+      app.uisAssistantLastQuery = '';
+      app.uisAssistantLastAnswer = null;
+      app.uisRecoveryReport = null;
+      app.uisRecoveryBusy = false;
+
+      const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+      const fmt = value => Number(value || 0).toLocaleString();
+      const money = value => `₱${Number(value || 0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+      const validSnapshot = snap => !!(snap?.workbook?.originalBuffer && Array.isArray(snap.workbook.worksheets) && snap.workbook.worksheets.length > 0 && snap.workbook.worksheets.every(ws => ws && Array.isArray(ws.headers) && Array.isArray(ws.records)));
+
+      const _uisAssistantRenderNav = app.renderNavTabs.bind(app);
+      app.renderNavTabs = function() {
+        _uisAssistantRenderNav();
+        const container = document.getElementById('nav-tabs-container');
+        if (!container || container.querySelector('[data-uis-assistant-nav]')) return;
+        const active = this.activeView === 'assistant';
+        container.insertAdjacentHTML('beforeend', `<div class="pt-2"><div class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-neutral-500">Assistant</div><button data-uis-assistant-nav onclick="app.switchView('assistant')" aria-current="${active?'page':'false'}" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold ${active?'bg-emerald-500/15 text-emerald-200':'text-neutral-400 hover:text-white hover:bg-white/5'}"><i data-lucide="sparkles" class="w-4 h-4 ${active?'text-emerald-300':'text-neutral-400'}"></i><span>UIS Local Assistant</span></button></div>`);
+        if (window.lucide) lucide.createIcons();
+      };
+
+      const _uisAssistantRenderMain = app.renderMainView.bind(app);
+      app.renderMainView = function() {
+        if (this.activeView !== 'assistant') return _uisAssistantRenderMain();
+        const container = document.getElementById('main-view-container');
+        const title = document.getElementById('secondary-stage-title');
+        if (!container) return;
+        document.body.classList.remove('uis-edge-view','uis-pos-view');
+        if (title) title.textContent = 'UIS Local Assistant';
+        this.renderUISLocalAssistant(container);
+        if (window.lucide) lucide.createIcons();
+      };
+
+      app.renderUISLocalAssistant = function(container) {
+        const tab = this.uisAssistantTab || 'inventory';
+        const report = this.uisRecoveryReport;
+        const workbooks = this.getWorkspaceWorkbooks?.() || [];
+        const inventoryReady = workbooks.some(wb => wb?.worksheets?.length);
+        const answer = this.uisAssistantLastAnswer;
+        const answerHtml = answer ? `<div class="uis-ai-result mt-3"><div class="text-[10px] font-bold uppercase tracking-wider text-emerald-300">Local analysis</div><div class="uis-ai-answer mt-2 text-xs text-neutral-200">${esc(answer.text)}</div>${answer.items?.length?`<div class="mt-3 grid gap-2">${answer.items.map(item=>`<div class="uis-ai-result"><div class="text-xs font-semibold text-white">${esc(item.title)}</div><div class="mt-1 text-[10px] text-neutral-400">${esc(item.meta)}</div></div>`).join('')}</div>`:''}<div class="mt-3 text-[10px] text-neutral-500">Based on ${fmt(answer.rowCount)} local inventory record(s). No workbook data was sent over the internet.</div></div>` : '';
+        const reportHtml = report ? `<div class="uis-ai-result mt-3"><div class="flex items-center justify-between gap-2"><div class="text-xs font-bold text-white">Local recovery check</div><span class="uis-ai-status">${report.error?'Check needs attention':report.hasSnapshot?'Snapshot found':'No snapshot found'}</span></div><div class="mt-3 grid grid-cols-2 gap-2 text-[11px]
+          "><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">Database</div><div class="mt-1 text-white">${esc(report.dbName||'Unavailable')}</div></div><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">DB version</div><div class="mt-1 text-white">${esc(report.version??'Unknown')}</div></div><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">Latest snapshot</div><div class="mt-1 text-white">${report.latestValid?'Valid':report.latestExists?'Present, structure not verified':'Not found'}</div></div><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">Previous snapshot</div><div class="mt-1 text-white">${report.previousValid?'Valid':report.previousExists?'Present, structure not verified':'Not found'}</div></div><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">Open workbooks</div><div class="mt-1 text-white">${fmt(report.openWorkbookCount)}</div></div><div class="rounded-lg bg-black/20 p-2"><div class="text-neutral-500">Browser storage</div><div class="mt-1 text-white">${esc(report.storageText||'Not available')}</div></div></div><div class="uis-ai-answer mt-3 text-xs text-neutral-300">${esc(report.guidance)}</div>${report.error?`<div class="mt-2 text-[10px] text-rose-300">${esc(report.error)}</div>`:''}${report.retryAllowed?'<button onclick="app.retryUISLocalRecovery()" class="mt-3 w-full rounded-xl bg-amber-300 px-4 py-2.5 text-xs font-bold text-slate-950">Retry existing local recovery</button>':''}<div class="mt-2 text-[10px] text-neutral-500">Read-only inspection. No database stores or snapshots were deleted, replaced, or migrated.</div></div>` : '';
+        container.innerHTML = `<div class="space-y-4 pb-8">
+          <section class="uis-ai-panel p-4 sm:p-5"><div class="flex items-start gap-3"><div class="w-10 h-10 rounded-xl bg-emerald-400/10 text-emerald-300 flex items-center justify-center shrink-0"><i data-lucide="sparkles" class="w-5 h-5"></i></div><div class="min-w-0"><div class="text-sm font-bold text-white">UIS Local Assistant</div><p class="mt-1 text-[11px] leading-relaxed text-neutral-400">Two tools, one privacy boundary: local recovery diagnostics and inventory analysis. Runs in this browser without uploading workbooks or enabling cloud sync.</p></div></div><div class="mt-4 flex flex-wrap gap-2"><span class="uis-ai-status">Local only</span><span class="uis-ai-status">No API key</span><span class="uis-ai-status">No cloud sync</span></div></section>
+          <div class="flex flex-wrap gap-2"><button class="uis-ai-tab" aria-selected="${tab==='inventory'}" onclick="app.setUISAssistantTab('inventory')">Inventory assistant</button><button class="uis-ai-tab" aria-selected="${tab==='recovery'}" onclick="app.setUISAssistantTab('recovery')">Recovery assistant</button></div>
+          ${tab==='inventory'?`<section class="uis-ai-panel p-4 sm:p-5"><div class="flex items-center justify-between gap-2"><div><h3 class="text-sm font-bold text-white">Ask about your inventory</h3><p class="mt-1 text-[10px] text-neutral-400">Searches all currently open workbooks and their recorded history.</p></div><span class="text-[10px] text-neutral-500">${fmt(workbooks.length)} workbook(s)</span></div>${inventoryReady?`<form class="mt-4 space-y-2" onsubmit="app.askUISLocalAssistant(event)"><label class="block text-[10px] font-semibold text-neutral-300" for="uis-ai-query">Your question</label><textarea id="uis-ai-query" rows="3" maxlength="500" class="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-3 text-xs text-white" placeholder="Example: Which items are low in stock across all workbooks?" oninput="app.uisAssistantQuery=this.value">${esc(this.uisAssistantQuery||'')}</textarea><button type="submit" class="w-full rounded-xl bg-emerald-500 px-4 py-3 text-xs font-bold text-slate-950">Analyze local inventory</button></form><div class="mt-3 flex flex-wrap gap-2"><button class="uis-ai-chip" onclick="app.askUISLocalAssistantPrompt('Show low-stock items')">Low stock</button><button class="uis-ai-chip" onclick="app.askUISLocalAssistantPrompt('Find duplicate barcodes')">Duplicate barcodes</button><button class="uis-ai-chip" onclick="app.askUISLocalAssistantPrompt('Show out-of-stock items')">Out of stock</button><button class="uis-ai-chip" onclick="app.askUISLocalAssistantPrompt('Summarize stock movement this month')">Stock movement</button><button class="uis-ai-chip" onclick="app.askUISLocalAssistantPrompt('Show inventory valuation')">Inventory value</button></div>${answerHtml||'<div class="mt-4 rounded-xl border border-dashed border-white/10 p-4 text-center text-[11px] text-neutral-500">Ask a question or tap a suggested topic. Analysis stays on this device.</div>'}</section>`:`<section class="uis-ai-panel p-5 text-center"><i data-lucide="file-spreadsheet" class="mx-auto h-8 w-8 text-neutral-500"></i><div class="mt-2 text-sm font-semibold text-white">No open workbook yet</div><p class="mt-1 text-xs text-neutral-400">Import a workbook or recover your local workspace to start inventory analysis.</p><button onclick="document.getElementById('file-upload-input').click()" class="mt-3 rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-bold text-slate-950">Import workbook</button></section>`}`:`<section class="uis-ai-panel p-4 sm:p-5"><div class="flex items-start gap-3"><div class="w-9 h-9 rounded-xl bg-amber-400/10 text-amber-200 flex items-center justify-center"><i data-lucide="shield-check" class="w-5 h-5"></i></div><div><h3 class="text-sm font-bold text-white">Local recovery assistant</h3><p class="mt-1 text-[10px] leading-relaxed text-neutral-400">Checks the existing UIS IndexedDB database and its latest/previous snapshots. It does not clear storage, downgrade the database, or overwrite a visible workspace.</p></div></div><div class="mt-4 flex flex-wrap gap-2"><button onclick="app.runUISRecoveryCheck()" ${this.uisRecoveryBusy?'disabled':''} class="rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-bold text-slate-950 disabled:opacity-50">${this.uisRecoveryBusy?'Checking…':'Run safe recovery check'}</button><button onclick="app.downloadWorkspaceBackup?.()" ${!this.workbook?'disabled':''} class="rounded-xl border border-white/15 px-4 py-2.5 text-xs font-semibold text-neutral-200 disabled:opacity-40">Export JSON backup</button></div>${reportHtml||'<div class="mt-4 rounded-xl border border-dashed border-white/10 p-4 text-center text-[11px] text-neutral-500">Run a read-only check to inspect local recovery status.</div>'}<div class="mt-4 rounded-xl border border-amber-400/20 bg-amber-950/20 p-3 text-[10px] leading-relaxed text-amber-100">If your workspace is currently visible, export a JSON backup before replacing UIS. Do not clear browser/site data or uninstall the PWA while recovery is uncertain.</div></section>`}
+          <p class="px-1 text-[10px] leading-relaxed text-neutral-600">Capability note: this build uses local rules, indexed workbook data, and deterministic diagnostics. It is not connected to a generative AI model. A real model connection would require a separately secured service and explicit approval before any selected inventory data leaves this device.</p>
+        </div>`;
+      };
+
+      app.setUISAssistantTab = function(tab) { this.uisAssistantTab = tab==='recovery'?'recovery':'inventory'; this.renderMainView(); };
+      app.askUISLocalAssistantPrompt = function(query) { this.uisAssistantQuery=String(query||''); this.askUISLocalAssistant(); };
+      app.askUISLocalAssistant = function(event) {
+        if (event?.preventDefault) event.preventDefault();
+        const query=String(document.getElementById('uis-ai-query')?.value ?? this.uisAssistantQuery ?? '').trim();
+        if (!query) { this.showToast('Enter an inventory question first.','error'); return; }
+        this.uisAssistantQuery=query; this.uisAssistantLastQuery=query;
+        try {
+          const data=this.getInventoryInsights();
+          const rows=Array.isArray(data?.rows)?data.rows:[];
+          const q=query.toLowerCase();
+          let items=[], text='';
+          const addRows=(list, titlePrefix='')=>{items=list.slice(0,15).map(r=>({title:`${titlePrefix}${r.itemName||'Unnamed item'} · ${r.qty===null?'Unknown':fmt(r.qty)} on hand`,meta:`${r.workbookName} · ${r.sheetName} · Row ${r.rowNumber}${r.codes?.length?' · '+r.codes.join(', '):''}`}));};
+          if (/duplicate|collision|same barcode/.test(q)) {
+            const groups=data.duplicates||[]; text=`Found ${groups.length} barcode value(s) used by more than one inventory record across the open workbooks.`;
+            items=groups.slice(0,15).map(g=>({title:`Barcode ${g.code}`,meta:g.matches.map(r=>`${r.itemName} · ${r.workbookName} / ${r.sheetName} / row ${r.rowNumber}`).join(' | ')}));
+          } else if (/low\s*stock|reorder|running low/.test(q)) {
+            const list=data.low||[]; text=`${list.length} record(s) are at or below the current low-stock threshold of ${fmt(this.lowStockThreshold)} units. This is a threshold alert, not an automatic purchase recommendation.`; addRows(list);
+          } else if (/out of stock|zero stock|no stock|stockout/.test(q)) {
+            const list=data.zero||[]; text=`${list.length} record(s) currently have zero units recorded.`; addRows(list);
+          } else if (/valuation|inventory value|worth|total value|cost value/.test(q)) {
+            const a=this.getAdvancedInventoryAnalytics(); text=a.valued?.length?`Estimated inventory value is ${money(a.totalInventoryValue)} across ${fmt(a.valued.length)} records with usable unit-cost data. ${fmt(a.unvaluedRecords)} records could not be valued because a usable cost field was not found.`:`No usable unit-cost fields were detected, so UIS cannot calculate inventory value from the open workbooks.`;
+            items=(a.valued||[]).slice().sort((x,y)=>y.inventoryValue-x.inventoryValue).slice(0,12).map(r=>({title:`${r.itemName} · ${money(r.inventoryValue)}`,meta:`${r.workbookName} · ${r.sheetName} · ${fmt(r.qty)} units × ${money(r.unitCost)}`}));
+          } else if (/aging|old stock|slow moving|days old/.test(q)) {
+            const a=this.getAdvancedInventoryAnalytics(); const aging=a.aging||{}; text=`Stock age is based on recorded receipt dates when available, otherwise recognized date fields in the workbook. ${fmt(aging.days90plus?.length||0)} record(s) are 90+ days old; ${fmt(aging.noDate?.length||0)} have no usable date. Age alone does not prove an item is obsolete.`;
+            items=(aging.days90plus||[]).slice(0,15).map(r=>({title:`${r.itemName} · ${r.ageDays} days`,meta:`${r.workbookName} · ${r.sheetName} · ${fmt(r.qty)} units · ${r.ageBasis}`}));
+          } else if (/supplier|vendor/.test(q)) {
+            const a=this.getAdvancedInventoryAnalytics(); text=`Found ${a.suppliers?.length||0} supplier group(s), including unassigned records. Values are only calculated where unit cost is available.`;
+            items=(a.suppliers||[]).slice(0,15).map(r=>({title:r.supplier,meta:`${fmt(r.records)} records · ${fmt(r.units)} units · ${money(r.inventoryValue)} known value · ${r.lowStock} low-stock`}));
+          } else if (/movement|issued|received|last 24|last 7|last 30|this month|activity/.test(q)) {
+            const periods=this.getMovementPeriodSummary(); const p=/24|today|day/.test(q)?periods.day:/7|week/.test(q)?periods.week:periods.month;
+            text=`${p?.label||'Recent period'}: ${fmt(p?.transactions||0)} recorded movement event(s), ${fmt(p?.received||0)} unit(s) received, and ${fmt(p?.issued||0)} unit(s) issued. This reflects recorded inventory movements, not necessarily completed sales.`;
+            const a=this.getAdvancedInventoryAnalytics(); items=(a.rows||[]).filter(r=>r.issued90>0).sort((x,y)=>y.issued90-x.issued90).slice(0,12).map(r=>({title:`${r.itemName} · ${fmt(r.issued90)} issued in 90 days`,meta:`${r.workbookName} · ${r.sheetName} · ${r.daysOfCover===null?'Days of cover unavailable':r.daysOfCover.toFixed(1)+' days estimated cover'}`}));
+          } else if (/summary|overview|how many|total inventory|all items/.test(q)) {
+            text=`Workspace overview: ${fmt(rows.length)} inventory record(s), ${fmt(data.totalQty)} total units, ${fmt((data.low||[]).length)} low-stock record(s), ${fmt((data.zero||[]).length)} zero-stock record(s), and ${(data.duplicates||[]).length} duplicate barcode value(s) across ${fmt(this.getWorkspaceWorkbooks().length)} workbook(s).`;
+            addRows((data.low||[]).slice(0,12),'Low stock · ');
+          } else {
+            const terms=q.split(/\s+/).filter(t=>t.length>1 && !/^(show|find|search|what|which|where|item|items|product|products|please|the|for|with|from|across|workbook|workbooks)$/.test(t));
+            const matches=rows.filter(r=>{const hay=[r.itemName,r.workbookName,r.sheetName,...(r.codes||[]),r.rowNumber].join(' ').toLowerCase();return terms.length?terms.some(t=>hay.includes(t)):false;});
+            text=matches.length?`Found ${matches.length} matching inventory record(s) across the open workbooks. Results are local matches against item names, workbook/worksheet names, barcodes, and row numbers.`:`No matching inventory records were found. Try an item name, barcode, workbook name, or a supported topic such as low stock, duplicate barcodes, stock movement, supplier, or valuation.`;
+            addRows(matches);
+          }
+          this.uisAssistantLastAnswer={text,items,rowCount:rows.length};
+        } catch(error) {
+          this.uisAssistantLastAnswer={text:`I could not complete this analysis: ${error?.message||error}. No workbook data was changed.`,items:[],rowCount:0};
+        }
+        this.renderMainView();
+      };
+
+      app.runUISRecoveryCheck = async function() {
+        this.uisRecoveryBusy=true; this.renderMainView();
+        try {
+          if (!('indexedDB' in window)) throw new Error('This browser does not provide IndexedDB.');
+          const db=await this.openWorkspaceDatabase();
+          const report={dbName:db.name,version:db.version,stores:Array.from(db.objectStoreNames||[]),openWorkbookCount:(this.getWorkspaceWorkbooks?.()||[]).length,
+            latestExists:false,previousExists:false,latestValid:false,previousValid:false,hasSnapshot:false,error:null,storageText:'Not available'};
+          if (!db.objectStoreNames.contains('snapshots')) throw new Error('The database opened, but the snapshots store is missing. Do not delete the database.');
+          const snapshots=await new Promise((resolve,reject)=>{
+            const tx=db.transaction('snapshots','readonly'),store=tx.objectStore('snapshots'); let latest,previous;
+            const a=store.get('latest'),b=store.get('previous'); let done=0;
+            const finish=()=>{if(++done===2)resolve({latest,previous});};
+            a.onsuccess=()=>{latest=a.result||null;finish();}; b.onsuccess=()=>{previous=b.result||null;finish();};
+            a.onerror=b.onerror=()=>reject(tx.error||new Error('Could not read local snapshots.'));
+            tx.onabort=()=>reject(tx.error||new Error('Snapshot inspection transaction was interrupted.'));
+          });
+          report.latestExists=!!snapshots.latest; report.previousExists=!!snapshots.previous;
+          report.latestValid=validSnapshot(snapshots.latest); report.previousValid=validSnapshot(snapshots.previous);
+          report.hasSnapshot=report.latestValid||report.previousValid;
+          if (navigator.storage?.estimate) {
+            const est=await navigator.storage.estimate().catch(()=>null);
+            if (est?.quota) report.storageText=`${(est.usage/1024/1024).toFixed(1)} MB used / ${(est.quota/1024/1024).toFixed(0)} MB quota`;
+          }
+          if (this._workspaceSaveError) report.guidance=`The database and snapshot records were readable. UIS also reports a recent save error: ${this._workspaceSaveError.message||this._workspaceSaveError}. Export a JSON backup if the workbook is visible, then inspect browser storage availability before attempting another save.`;
+          else if (report.latestValid) report.guidance='A structurally valid latest snapshot is present. If your workbook is visible, export a fresh JSON backup now. If the workspace is missing, do not clear site data; retry recovery only when no workbook is currently loaded.';
+          else if (report.previousValid) report.guidance='The latest snapshot is not structurally valid, but the previous snapshot appears valid. If no workbook is currently loaded, use the retry option below to let UIS attempt its existing previous-snapshot recovery path. Export a JSON backup immediately if it loads.';
+          else if (report.latestExists||report.previousExists) report.guidance='Snapshot records exist, but neither passed the basic structural check. Do not overwrite or delete them. Export any currently visible data and preserve the browser profile while investigating.';
+          else report.guidance='No usable latest or previous snapshot was found in the opened database. This check cannot recreate data that is no longer present. Do not clear browser storage; check whether the original browser profile/device is being used and look for an existing JSON backup.';
+          report.retryAllowed=!this.workbook && !this.getWorkspaceWorkbooks().length && report.hasSnapshot;
+          this.uisRecoveryReport=report;
+        } catch(error) {
+          this.uisRecoveryReport={dbName:'UIS_LocalWorkspace',version:'Unknown',openWorkbookCount:(this.getWorkspaceWorkbooks?.()||[]).length,storageText:'Not available',error:error?.message||String(error),guidance:'The local database could not be inspected. Do not clear browser/site data or uninstall the PWA. If any workbook is visible, export a JSON backup before making changes. This diagnostic did not delete or repair anything.'};
+        } finally { this.uisAssistantBusy=false; this.uisRecoveryBusy=false; this.renderMainView(); }
+      };
+
+      app.retryUISLocalRecovery = async function() {
+        if (this.workbook || this.getWorkspaceWorkbooks().length) { this.showToast('A workbook is already loaded. Export a backup first; automatic restore is blocked to protect visible data.','error'); return; }
+        if (!this.uisRecoveryReport?.retryAllowed) { this.showToast('No structurally valid recovery snapshot is available to retry.','error'); return; }
+        try { await this.restoreWorkspaceIfAvailable(); this.renderAll(); if (this.workbook) { this.showToast('UIS recovery completed. Export a fresh JSON backup now.','success'); this.downloadWorkspaceBackup?.(); } else this.showToast('UIS could not restore a workbook from the available snapshots.','error'); }
+        catch(error) { this.showToast(`Recovery retry failed: ${error?.message||error}`,'error'); }
+      };
+    })();
+  </script>
+
   <script>
     // Register the UIS PWA service worker from the page itself.
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
