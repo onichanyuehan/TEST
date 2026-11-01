@@ -1164,8 +1164,23 @@ body {
     </button>
   </div>
 
-  <!-- Public account list for the basic deterrent-only login gate. -->
-  <script src="./auth.js?v=20261031-loginfix"></script>
+  <!-- Optional external account list. The inline fallback below keeps the downloaded
+       single-file application sign-in-capable when auth.js is not beside this HTML. -->
+  <script src="./auth.js?v=20261101-authfallback"></script>
+  <script>
+    if (!window.UIS_AUTH_CONFIG || !Array.isArray(window.UIS_AUTH_CONFIG.users) || !window.UIS_AUTH_CONFIG.users.length) {
+      window.UIS_AUTH_CONFIG = {
+        sessionHours: 8,
+        users: [
+          { username: 'admin', password: '1111' },
+          { username: 'staff', password: '1111' },
+          { username: 'john', password: '1111' },
+          { username: 'hazel', password: '1111' },
+          { username: 'filbars', password: '1111' }
+        ]
+      };
+    }
+  </script>
   <!-- ====================================================================== -->
   <!-- APPLICATION JAVASCRIPT ENGINE -->
   <!-- ====================================================================== -->
@@ -9117,7 +9132,7 @@ handleSetScannedItemQty(rawAddedQty) {
 
         const config = this.getConfig();
         if (!config) {
-          if (message) message.textContent = 'Could not load auth.js. Make sure auth.js is beside index.html, then refresh the page.';
+          if (message) message.textContent = 'Sign-in configuration is unavailable. Reload the page or check that this HTML file has not been modified.';
         } else if (!Array.isArray(config.users) || config.users.length === 0) {
           if (message) message.textContent = 'No accounts were found in auth.js. Check that the users list contains active account entries.';
         }
@@ -9138,7 +9153,7 @@ handleSetScannedItemQty(rawAddedQty) {
               password.value = '';
               this.startApp();
             } else {
-              if (message) message.textContent = 'Login did not match an account in the loaded auth.js file. Check the username and password, then try again.';
+              if (message) message.textContent = 'Username or password is incorrect. Check the details and try again.';
               password.value = '';
               password.focus();
             }
