@@ -1315,23 +1315,14 @@ body {
               ).trim()
             : '';
 
-          const allRowFields = ws.headers.map(h => {
+          // Build row-detail fields only when a user opens a matching record.
+          // Eagerly allocating one object per cell for every indexed row caused
+          // avoidable memory growth on large multi-workbook workspaces.
+          const makeAllRowFields = () => ws.headers.map(h => {
             const cellObj = rec.cells[h.colIndex];
-            const val = h.isFflz
-              ? rec.currentFflzValue
-              : h.isFullUpc
-              ? rec.currentFullUpcValue
-              : (cellObj?.value ?? '');
-            return {
-              colIndex: h.colIndex,
-              colLetter: h.colLetter,
-              cellRef: `${h.colLetter}${rec.rowNumber}`,
-              headerName: h.name,
-              value: String(val ?? '').trim(),
-              formula: cellObj?.formula || null,
-              isFflz: h.isFflz,
-              isFullUpc: h.isFullUpc
-            };
+            const val = h.isFflz ? rec.currentFflzValue : h.isFullUpc ? rec.currentFullUpcValue : (cellObj?.value ?? '');
+            return { colIndex: h.colIndex, colLetter: h.colLetter, cellRef: `${h.colLetter}${rec.rowNumber}`, headerName: h.name,
+              value: String(val ?? '').trim(), formula: cellObj?.formula || null, isFflz: h.isFflz, isFullUpc: h.isFullUpc };
           });
 
           headersToIndex.forEach(h => {
@@ -1366,7 +1357,7 @@ body {
                 : 'N/A',
               currentFflzValue: rec.currentFflzValue,
               currentFullUpcValue: rec.currentFullUpcValue || '',
-              allRowFields
+              get allRowFields() { return makeAllRowFields(); }
             };
 
             allEntries.push(productEntry);
@@ -1394,8 +1385,19 @@ body {
 
       if (Array.isArray(index.allEntries) && index.allEntries.length > 0) {
         const rowEvaluations = new Map();
+        const scannedWindow = full.slice(-6);
+        const candidateSet = new Set();
+        // Index construction stores every 3-6 digit substring of each stored
+        // code's last-six window. Only inspect buckets relevant to this scan.
+        for (let len = Math.min(6, scannedWindow.length); len >= 3; len--) {
+          for (let start = 0; start <= scannedWindow.length - len; start++) {
+            const bucket = index.get(scannedWindow.slice(start, start + len));
+            if (bucket) bucket.forEach(entry => candidateSet.add(entry));
+          }
+        }
+        const candidates = candidateSet.size ? candidateSet : index.allEntries;
 
-        for (const entry of index.allEntries) {
+        for (const entry of candidates) {
           const score = computeCappedSuffixScore(full, entry.normalizedCode);
           if (!score) continue;
 
@@ -3055,10 +3057,11 @@ body {
         if (this._workspaceDbPromise) return this._workspaceDbPromise;
         this._workspaceDbPromise = new Promise((resolve, reject) => {
           if (!('indexedDB' in window)) { reject(new Error('IndexedDB is unavailable')); return; }
-          const request = indexedDB.open('UIS_LocalWorkspace', 2);
+          const request = indexedDB.open('UIS_LocalWorkspace', 3);
           request.onupgradeneeded = () => {
             const db = request.result;
             if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', { keyPath: 'id' });
+            if (!db.objectStoreNames.contains('searchIndexes')) db.createObjectStore('searchIndexes', { keyPath: 'id' });
           };
           request.onsuccess = () => {
             const db = request.result;
@@ -3092,12 +3095,12 @@ body {
         this._workspaceSaveRevision = (this._workspaceSaveRevision || 0) + 1;
         this._workspaceSaveError = null;
         clearTimeout(this._workspaceSaveTimer);
-        // Persist on the next task turn. This is intentionally not a long debounce:
-        // inventory edits should reach IndexedDB as soon as the current UI event ends.
+        // Coalesce rapid edits into one IndexedDB snapshot. Explicit flushes,
+        // workbook switches, and page-hide handlers still force an immediate save.
         this._workspaceSaveTimer = setTimeout(() => {
           this._workspaceSaveTimer = null;
           this.persistWorkspaceSnapshot().catch(err => console.warn('UIS autosave failed:', err));
-        }, 0);
+        }, 650);
       },
 
       async persistWorkspaceSnapshot() {
@@ -8171,7 +8174,10 @@ handleSetScannedItemQty(rawAddedQty) {
         const partial = buildCodeIndex(wb.worksheets, workbookIdx, wb.filename || `Workbook ${workbookIdx+1}`);
         (partial.allEntries||[]).forEach(entry => {
           allEntries.push(entry);
-          [entry.normalizedCode, entry.normalizedCode?.length>6 ? entry.normalizedCode.slice(-6) : ''].forEach(key => {
+          const lastSix=String(entry.normalizedCode||'').slice(-6);
+          const keys=new Set([entry.normalizedCode,lastSix]);
+          for(let len=3;len<=Math.min(6,lastSix.length);len++) for(let start=0;start<=lastSix.length-len;start++) keys.add(lastSix.slice(start,start+len));
+          keys.forEach(key => {
             if (!key) return;
             const bucket = globalIndex.get(key)||[];
             if (!bucket.some(p=>p.workbookIdx===entry.workbookIdx&&p.sheetIdx===entry.sheetIdx&&p.rowNumber===entry.rowNumber)) bucket.push(entry);
@@ -8426,6 +8432,304 @@ handleSetScannedItemQty(rawAddedQty) {
       if(keepPosView)this.activeView='pos';
       this.renderAll();
     };
+    // Performance safeguards for large workspaces. Imports remain sequential and
+    // each workbook still receives its normal verified local save.
+    app._uisImportBatchMode = false;
+    app._uisImportYield = () => new Promise(resolve => setTimeout(resolve, 0));
+    const _uisRebuildIndexForPerf = app.rebuildIndex.bind(app);
+    app.rebuildIndex = function() {
+      if (this._uisImportBatchMode) { this._uisIndexNeedsRebuild = true; return; }
+      return _uisRebuildIndexForPerf();
+    };
+    const _uisRenderAllForPerf = app.renderAll.bind(app);
+    app.renderAll = function() {
+      if (this._uisImportBatchMode) { this._uisRenderNeedsRefresh = true; return; }
+      return _uisRenderAllForPerf();
+    };
+    app._uisRunImportBatch = async function(task) {
+      const wasBatch = this._uisImportBatchMode;
+      const oldRender = this.renderAll;
+      const oldRebuild = this.rebuildIndex;
+      this._uisImportBatchMode = true;
+      this._uisIndexNeedsRebuild = false;
+      this._uisRenderNeedsRefresh = false;
+      try {
+        return await task();
+      } finally {
+        this._uisImportBatchMode = wasBatch;
+        if (!wasBatch) {
+          this._uisIndexNeedsRebuild = false;
+          this._uisRenderNeedsRefresh = false;
+          _uisRebuildIndexForPerf();
+          _uisRenderAllForPerf();
+          await this.flushWorkspaceSave().catch(err => { console.error('UIS final batch save failed:', err); this.showToast('Final batch save needs attention. Download a JSON backup.', 'error'); });
+        }
+      }
+    };
+    const _uisHandleFileUploadPerf = app.handleFileUpload.bind(app);
+    app.handleFileUpload = async function(e) {
+      const files = Array.from(e?.target?.files || []);
+      if (e?.target) e.target.value = '';
+      if (!files.length) return;
+      return this._uisRunImportBatch(async () => {
+        for (let i = 0; i < files.length; i++) {
+          await this.handleSingleWorkbookUpload(files[i]);
+          await this._uisImportYield();
+        }
+      });
+    };
+    const _uisHandleZipUploadPerf = app.handleZipUpload.bind(app);
+    app.handleZipUpload = async function(e) {
+      return this._uisRunImportBatch(async () => {
+        await _uisHandleZipUploadPerf(e);
+        await this._uisImportYield();
+      });
+    };
+
+    // Keep undo/redo bounded by both operation count and estimated memory.
+    // This avoids dozens of full-workbook clones accumulating on low-RAM phones.
+    app.historyLimit = 10;
+    app.historyMemoryBudgetBytes = 48 * 1024 * 1024;
+    app._uisEstimateSnapshotBytes = function(snapshot) {
+      let bytes = 4096;
+      const books = snapshot?.workbookSnapshots?.map(x => x.workbook) || (snapshot?.workbook ? [snapshot.workbook] : []);
+      for (const wb of books) {
+        bytes += Number(wb?.originalBuffer?.byteLength || 0) + Number(wb?.workingBuffer?.byteLength || 0);
+        for (const ws of wb?.worksheets || []) {
+          bytes += (ws.records?.length || 0) * 96;
+          for (const rec of ws.records || []) bytes += (rec.cells?.length || 0) * 40;
+        }
+      }
+      return bytes;
+    };
+    app._uisTrimHistory = function() {
+      const combined = [...(this.undoStack || []), ...(this.redoStack || [])];
+      let total = combined.reduce((sum, item) => sum + (item?._uisEstimatedBytes || this._uisEstimateSnapshotBytes(item)), 0);
+      while ((this.undoStack.length + this.redoStack.length) > this.historyLimit || total > this.historyMemoryBudgetBytes) {
+        const stack = this.undoStack.length ? this.undoStack : this.redoStack;
+        if (!stack.length) break;
+        const removed = stack.shift();
+        total -= removed?._uisEstimatedBytes || this._uisEstimateSnapshotBytes(removed);
+      }
+    };
+    const _uisPushUndoPerf = app.pushUndoState.bind(app);
+    app.pushUndoState = function(label='Edit') {
+      _uisPushUndoPerf(label);
+      const item = this.undoStack[this.undoStack.length - 1];
+      if (item) item._uisEstimatedBytes = this._uisEstimateSnapshotBytes(item);
+      this._uisTrimHistory();
+    };
+    const _uisUndoPerf = app.undoEdit.bind(app);
+    app.undoEdit = function() { _uisUndoPerf(); const item=this.redoStack[this.redoStack.length-1]; if(item && !item._uisEstimatedBytes)item._uisEstimatedBytes=this._uisEstimateSnapshotBytes(item); this._uisTrimHistory(); };
+    const _uisRedoPerf = app.redoEdit.bind(app);
+    app.redoEdit = function() { _uisRedoPerf(); const item=this.undoStack[this.undoStack.length-1]; if(item && !item._uisEstimatedBytes)item._uisEstimatedBytes=this._uisEstimateSnapshotBytes(item); this._uisTrimHistory(); };
+
+    // Lightweight performance panel. Values are estimates where browser APIs do
+    // not expose exact per-tab memory usage.
+    app.openPerformancePanel = async function() {
+      let panel = document.getElementById('uis-performance-panel');
+      if (!panel) {
+        panel = document.createElement('section'); panel.id = 'uis-performance-panel';
+        panel.style.cssText = 'position:fixed;z-index:9998;right:12px;top:76px;width:min(360px,calc(100vw - 24px));max-height:70vh;overflow:auto;background:#101a22;color:#e5eef3;border:1px solid #36505d;border-radius:14px;padding:14px;box-shadow:0 18px 55px #0009;font:12px system-ui';
+        document.body.appendChild(panel);
+      }
+      const books=this.getWorkspaceWorkbooks();
+      let records=0, sheets=0, bytes=0, indexed=0;
+      for(const wb of books){
+        bytes += Number(wb?.originalBuffer?.byteLength||0)+Number(wb?.workingBuffer?.byteLength||0);
+        for(const ws of wb?.worksheets||[]){sheets++;records += ws.records?.length||0;}
+      }
+      indexed = this.inventoryCodeIndex?.allEntries?.length || 0;
+      let storage='Not available';
+      try { const est=await navigator.storage?.estimate?.(); if(est){const mb=n=>(Number(n||0)/1048576).toFixed(1);storage=`${mb(est.usage)} MB used / ${est.quota?mb(est.quota)+' MB quota':'quota unavailable'}`;} } catch(_) {}
+      const mb=n=>(n/1048576).toFixed(1);
+      panel.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong style="font-size:14px">UIS Performance</strong><button type="button" id="uis-perf-close" style="padding:5px 9px;border:1px solid #456;border-radius:8px">Close</button></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">${[['Workbooks',books.length],['Worksheets',sheets],['Records',records.toLocaleString()],['Indexed codes',indexed.toLocaleString()],['Workbook buffers',mb(bytes)+' MB'],['Undo / redo',(this.undoStack?.length||0)+' / '+(this.redoStack?.length||0)]].map(([k,v])=>`<div style="background:#1a2933;border-radius:9px;padding:9px"><div style="color:#9fb2bd">${k}</div><strong style="font-size:15px">${v}</strong></div>`).join('')}</div><p style="margin:10px 0 0;color:#a9bdc7">Browser storage: ${storage}</p><p style="margin:8px 0 0;color:#f4c979">Buffer size is not total RAM usage. Actual capacity depends on your phone and browser.</p><p style="margin:8px 0 0;color:#9fb2bd">Local-only workspace. No cloud upload.</p>`;
+      panel.querySelector('#uis-perf-close')?.addEventListener('click',()=>panel.remove());
+    };
+    const perfButton=document.createElement('button');
+    perfButton.type='button'; perfButton.id='uis-performance-button'; perfButton.textContent='Performance';
+    perfButton.title='View UIS workspace size and performance indicators';
+    perfButton.style.cssText='position:fixed;right:12px;bottom:14px;z-index:9997;padding:9px 12px;border-radius:999px;background:#19352f;color:#8df0d0;border:1px solid #3b806f;font:600 11px system-ui;box-shadow:0 5px 18px #0007';
+    perfButton.addEventListener('click',()=>app.openPerformancePanel());
+    document.addEventListener('DOMContentLoaded',()=>{if(!document.getElementById('uis-performance-button'))document.body.appendChild(perfButton);},{once:true});
+    if(document.readyState!=='loading' && !document.getElementById('uis-performance-button')) document.body.appendChild(perfButton);
+
+    // -----------------------------------------------------------------------
+    // PERSISTENT WORKSPACE-WIDE SEARCH INDEX (IndexedDB, local-only)
+    // The workbook data remains the source of truth. This compact index stores
+    // stable workbook/sheet/row references and is rebuilt whenever inventory
+    // changes. Barcode matching rules are not changed.
+    // -----------------------------------------------------------------------
+    app.getGlobalSearchSignature = function() {
+      return JSON.stringify(this.getWorkspaceWorkbooks().map((wb, workbookIdx) => ({
+        workbookIdx,
+        filename: String(wb?.filename || ''),
+        revision: Number(wb?._uisIndexRevision || 0),
+        sheets: (wb?.worksheets || []).length,
+        records: (wb?.worksheets || []).reduce((sum, ws) => sum + (ws?.records?.length || 0), 0)
+      })));
+    };
+
+    app.persistGlobalSearchIndex = async function() {
+      try {
+        if (!this.getWorkspaceWorkbooks().length) return false;
+        const db = await this.openWorkspaceDatabase();
+        const entries = (this.inventoryCodeIndex?.allEntries || []).map(entry => ({
+          workbookIdx: entry.workbookIdx ?? 0,
+          workbookName: entry.workbookName || '',
+          sheetIdx: entry.sheetIdx,
+          sheetName: entry.sheetName || '',
+          rowNumber: entry.rowNumber,
+          matchedColIndex: entry.matchedColIndex,
+          matchedColLetter: entry.matchedColLetter || '',
+          matchedColumnName: entry.matchedColumnName || '',
+          columnCategory: entry.columnCategory || 'CODE',
+          storedCode: entry.storedCode || '',
+          normalizedCode: entry.normalizedCode || '',
+          codeColDisplay: entry.codeColDisplay || '—',
+          barcodeColDisplay: entry.barcodeColDisplay || '—',
+          skuDisplay: entry.skuDisplay || '',
+          itemName: entry.itemName || 'Unnamed Product',
+          price: entry.price || 'N/A',
+          currentFflzValue: entry.currentFflzValue ?? '',
+          currentFullUpcValue: entry.currentFullUpcValue || ''
+        }));
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction('searchIndexes', 'readwrite');
+          tx.objectStore('searchIndexes').put({ id: 'global', version: 1, signature: this.getGlobalSearchSignature(), savedAt: Date.now(), entries });
+          tx.oncomplete = resolve;
+          tx.onerror = tx.onabort = () => reject(tx.error || new Error('Search index save failed'));
+        });
+        this._uisSearchIndexLastSavedAt = Date.now();
+        return true;
+      } catch (error) {
+        console.warn('UIS could not persist the local global search index:', error);
+        this._uisSearchIndexSaveError = error;
+        return false;
+      }
+    };
+
+    app.restoreGlobalSearchIndex = async function() {
+      try {
+        const db = await this.openWorkspaceDatabase();
+        const saved = await new Promise((resolve, reject) => {
+          const tx = db.transaction('searchIndexes', 'readonly');
+          const req = tx.objectStore('searchIndexes').get('global');
+          req.onsuccess = () => resolve(req.result || null);
+          req.onerror = () => reject(req.error || new Error('Search index read failed'));
+        });
+        if (!saved || saved.version !== 1 || saved.signature !== this.getGlobalSearchSignature() || !Array.isArray(saved.entries)) return false;
+        const books = this.getWorkspaceWorkbooks();
+        const globalIndex = new Map();
+        const allEntries = [];
+        for (const stored of saved.entries) {
+          const wb = books[Number(stored.workbookIdx)];
+          const ws = wb?.worksheets?.[Number(stored.sheetIdx)];
+          const rec = ws?.records?.find(row => Number(row.rowNumber) === Number(stored.rowNumber));
+          if (!wb || !ws || !rec) return false;
+          const entry = { ...stored };
+          // Resolve full row details lazily only when a user opens a match.
+          Object.defineProperty(entry, 'allRowFields', { enumerable: true, get: () => ws.headers.map(h => {
+            const cellObj = rec.cells?.[h.colIndex];
+            const val = h.isFflz ? rec.currentFflzValue : h.isFullUpc ? rec.currentFullUpcValue : (cellObj?.value ?? '');
+            return { colIndex: h.colIndex, colLetter: h.colLetter, cellRef: `${h.colLetter}${rec.rowNumber}`, headerName: h.name,
+              value: String(val ?? '').trim(), formula: cellObj?.formula || null, isFflz: h.isFflz, isFullUpc: h.isFullUpc };
+          }) });
+          allEntries.push(entry);
+          const lastSix = String(entry.normalizedCode || '').slice(-6);
+          const keys = new Set([entry.normalizedCode, lastSix]);
+          for (let len = 3; len <= Math.min(6, lastSix.length); len++) {
+            for (let start = 0; start <= lastSix.length - len; start++) keys.add(lastSix.slice(start, start + len));
+          }
+          for (const key of keys) {
+            if (!key) continue;
+            const bucket = globalIndex.get(key) || [];
+            if (!bucket.some(item => item.workbookIdx === entry.workbookIdx && item.sheetIdx === entry.sheetIdx && Number(item.rowNumber) === Number(entry.rowNumber))) bucket.push(entry);
+            globalIndex.set(key, bucket);
+          }
+        }
+        globalIndex.allEntries = allEntries;
+        this.codeIndex = globalIndex;
+        this.inventoryCodeIndex = globalIndex;
+        this._uisSearchIndexLastSavedAt = Number(saved.savedAt) || 0;
+        this._uisGlobalSearchIndexDirty = false;
+        return true;
+      } catch (error) {
+        console.warn('UIS could not restore the local global search index; rebuilding it:', error);
+        return false;
+      }
+    };
+
+    // Only changed workbooks invalidate the cached global index. The current
+    // workbook data remains authoritative, so a missing/stale cache is rebuilt.
+    const _uisMarkWorkbookModifiedIndex = app.markWorkbookModified.bind(app);
+    app.markWorkbookModified = function(workbookIdx) {
+      const idx = Number.isInteger(Number(workbookIdx)) ? Number(workbookIdx) : (this.activeWorkbookTabIndex || 0);
+      const wb = this.getWorkspaceWorkbooks()[idx];
+      if (wb) wb._uisIndexRevision = Number(wb._uisIndexRevision || 0) + 1;
+      this._uisGlobalSearchIndexDirty = true;
+      this._gridSearchIndexedWorkbook = null;
+      this._gridSearchCache = null;
+      this._gridSearchMatchedRows = null;
+      return _uisMarkWorkbookModifiedIndex(workbookIdx);
+    };
+
+    const _uisRebuildGlobalIndexBase = app.rebuildIndex.bind(app);
+    app.rebuildIndex = function() {
+      if (this._uisDeferGlobalIndexBuild) { this._uisGlobalIndexBuildPending = true; return; }
+      const result = _uisRebuildGlobalIndexBase();
+      this._uisGlobalSearchIndexDirty = false;
+      this.persistGlobalSearchIndex();
+      return result;
+    };
+
+    // During recovery, avoid immediately rebuilding the large index. Restore a
+    // matching persisted index first; if stale/missing, safely rebuild from data.
+    const _uisRestoreWorkspaceWithIndex = app.restoreWorkspaceIfAvailable.bind(app);
+    app.restoreWorkspaceIfAvailable = async function() {
+      this._uisDeferGlobalIndexBuild = true;
+      try { await _uisRestoreWorkspaceWithIndex(); }
+      finally { this._uisDeferGlobalIndexBuild = false; }
+      const restored = await this.restoreGlobalSearchIndex();
+      if (!restored) this.rebuildIndex();
+      this._uisGlobalIndexBuildPending = false;
+    };
+
+    // A scanner always checks freshness before lookup. Manual POS search and the
+    // worksheet-wide text search already aggregate all imported workbooks.
+    const _uisProcessScannedBarcodeIndex = app.handleProcessScannedBarcode.bind(app);
+    app.handleProcessScannedBarcode = function(rawBarcodeString) {
+      if (this._uisGlobalSearchIndexDirty) this.rebuildIndex();
+      return _uisProcessScannedBarcodeIndex(rawBarcodeString);
+    };
+    const _uisPosScannedBarcodeIndex = app.handlePosScannedBarcode.bind(app);
+    app.handlePosScannedBarcode = function(rawBarcodeString) {
+      if (this._uisGlobalSearchIndexDirty) this.rebuildIndex();
+      return _uisPosScannedBarcodeIndex(rawBarcodeString);
+    };
+
+    // The import-batch wrapper defers intermediate index rebuilds. Persist the
+    // final all-workbook index once the batch has completed.
+    const _uisRunImportBatchWithIndex = app._uisRunImportBatch.bind(app);
+    app._uisRunImportBatch = async function(task) {
+      const result = await _uisRunImportBatchWithIndex(task);
+      if (!this._uisImportBatchMode && this.getWorkspaceWorkbooks().length) {
+        this._uisGlobalSearchIndexDirty = false;
+        await this.persistGlobalSearchIndex();
+      }
+      return result;
+    };
+
+    // Keep source references stable for duplicate codes across different files.
+    app.resolveGlobalSearchEntry = function(entry) {
+      if (!entry) return null;
+      const workbookIdx = Number(entry.workbookIdx ?? 0);
+      const workbook = this.getWorkspaceWorkbooks()[workbookIdx];
+      const sheet = workbook?.worksheets?.[Number(entry.sheetIdx)];
+      const record = sheet?.records?.find(row => Number(row.rowNumber) === Number(entry.rowNumber));
+      return workbook && sheet && record ? { workbookIdx, workbook, sheet, record, sheetIdx: Number(entry.sheetIdx), rowNumber: Number(entry.rowNumber) } : null;
+    };
+
     // Basic client-side gate only. Credentials are public because auth.js is served by GitHub Pages.
     window.UISAuth = {
       sessionKey: 'UIS_BASIC_AUTH_SESSION_V1',
